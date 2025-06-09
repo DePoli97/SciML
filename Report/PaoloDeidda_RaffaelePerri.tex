@@ -1,0 +1,97 @@
+\documentclass[twocolumn]{article}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{here}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{siunitx} % Required for the \num command
+\usepackage{float}
+
+\newcommand{\code}[1]{{\tt #1}}
+
+\makeatletter
+\newcommand{\subsubsubsection}[1]{%
+  % Slightly smaller font and forced line break
+  {\small\bfseries #1\par}%
+  \vspace{0.5\baselineskip}%
+}
+\makeatother
+
+% decreas margin size
+\usepackage[margin=0.7in]{geometry}
+
+\newcommand\blankpage{%
+	\null
+	\thispagestyle{empty}%
+	\addtocounter{page}{-1}%
+	\newpage}
+
+\title{
+	\normalfont\normalsize
+	\textsc{Robotics SP 2025\\
+	Universit\`a della Svizzera italiana}\\
+	% \vspace{2pt}
+	\rule{\linewidth}{0.5pt}\\
+	% \vspace{5pt}
+	{\huge Tower Dropper\\
+	\small Group Z}\\
+	% \vspace{5pt}
+	\rule{\linewidth}{1pt}\\
+	\vspace{5pt}
+}
+
+\author{
+	Paolo Deidda (\text{paolo.deidda@usi.ch}) \\ 
+	Raffaele Perri (\text{raffaele.perri@usi.ch})\\
+	\url{https://github.com/USI-Projects-Collection/FinalProject-Robotics.git}
+	}
+\begin{document}
+\begin{titlepage}
+    \begin{center}
+        \textsc{Scientific Machine Learning SP 2025\\
+        Universit\`a della Svizzera italiana}\\[1ex]
+        
+        \rule{\linewidth}{0.5pt}\\[1ex]
+        \huge Final Project\\[0.5ex]
+        \normalsize
+        \url{https://github.com/DePoli97/SciML.git}
+        \rule{\linewidth}{1pt}\\[2ex]
+
+        Paolo Deidda (\texttt{paolo.deidda@usi.ch})\\
+        Raffaele Perri (\texttt{raffaele.perri@usi.ch})\\[1ex]
+    \end{center}
+
+    \vspace{2em}
+    \tableofcontents
+
+    \vfill
+    \subsection*{Setup}
+    To run the code follow the setup and execution instructions provided in the \texttt{README.md} file included in this repository.
+\end{titlepage}
+
+% % ====================================================================
+% \section{Introduction}\label{sec:intro}
+% \input{inputs/Introduction.tex}
+
+% % ====================================================================
+% \section{Workflow of the Project}\label{sec:workflow}
+% \input{inputs/Workflow.tex}
+% % One high‑level figure showing module layout can go here.
+
+% % ====================================================================
+% \section{System Integration}\label{sec:integration}
+% \input{inputs/SystemIntegration.tex}
+
+% % ====================================================================
+% \section{Results}\label{sec:results}
+% \input{inputs/Results.tex}
+
+% % ====================================================================
+% \section{Conclusion \& Future Improvements}\label{sec:conclusion}
+% \input{inputs/conclusion.tex}
+
+
+\end{document}
