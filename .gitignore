@@ -324,9 +324,14 @@ TSWLatexianTemp*
 .DS_Store
 *.DS_Store
 
-
 # images png
 *.png
 
 # ignore .csv 
 *.csv
+
+# Ignore simulation frames
+Scripts/frames/**/*.png
+
+# Ensure videos are tracked
+!Scripts/frames/**/*.mp4

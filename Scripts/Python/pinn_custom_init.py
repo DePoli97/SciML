@@ -155,7 +155,7 @@ def generate_training_points_custom(n_interior=4000, n_boundary=800, n_initial=8
     x_left = torch.zeros(n_side, 1)
     y_left = torch.rand(n_side, 1)
     t_left = torch.rand(n_side, 1) * T
-    
+
     x_right = torch.ones(n_side, 1)
     y_right = torch.rand(n_side, 1)
     t_right = torch.rand(n_side, 1) * T

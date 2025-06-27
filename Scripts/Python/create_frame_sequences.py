@@ -362,26 +362,3 @@ for result in results:
     print(f"     Script: {result['script']}")
     print(f"     Time: {result['time']:.1f}s")
     print()
-
-print("🎯 USAGE INSTRUCTIONS:")
-print("1. Navigate to each frame directory")
-print("2. Run the create_video.sh script to generate videos:")
-print("   ./create_video.sh")
-print("3. Or use the frames directly in video editing software")
-print("4. Frame naming: frame_0000.png, frame_0001.png, etc.")
-
-print("\n📊 ANIMATION SPECIFICATIONS:")
-print(f"  • Resolution: {nvx}×{nvy} grid points")
-print(f"  • Duration: {T} ms simulation time")
-print(f"  • Time step: {dt} ms")
-print(f"  • Frame rate: 10 fps (recommended)")
-print("  • Format: PNG frames (high quality)")
-print("  • Shows wave propagation through heterogeneous cardiac tissue")
-
-print("\n🎁 BONUS POINTS FEATURES:")
-print("  ✅ High-quality frame sequences")
-print("  ✅ Professional visualization of wave dynamics")
-print("  ✅ Clear demonstration of tissue heterogeneity effects")
-print("  ✅ Ready for video compilation")
-print("  ✅ Multiple output formats supported")
-
