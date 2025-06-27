@@ -7,6 +7,7 @@ from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import time
+import os
 
 def assembleMass(nvx, nvy, hx, hy):
     """Assemble mass matrix"""
@@ -102,8 +103,7 @@ def setup_initial_condition(nvx, nvy):
     
     # Initial condition: u0 = 1 if x >= 0.9 and y >= 0.9, else 0
     u0 = np.zeros((nvx, nvy))
-    u0[X >= 0.9] = 1.0
-    u0[Y >= 0.9] = 1.0
+    u0[(X > 0.9) & (Y > 0.9)] = 1.0
     u0 = u0.flatten(order='F')
     
     return u0
@@ -244,42 +244,155 @@ def monodomain_solver(nvx, nvy, T, dt, sigma_h, sigma_d_factor, a, fr, ft, fd):
         'u_bounds': (u_min, u_max)
     }
 
+def save_solution_frames(result, output_dir, case_name):
+    """
+    Save solution frames as PNG files for creating videos
+    
+    Parameters:
+    result: dict containing solution information
+    output_dir: directory to save frames
+    case_name: name of the case (for subdirectory)
+    """
+    import matplotlib.pyplot as plt
+    
+    # Create directory if it doesn't exist
+    case_dir = os.path.join(output_dir, case_name)
+    os.makedirs(case_dir, exist_ok=True)
+    
+    # Extract solution info
+    u_history = result['u_history']
+    times = result['times']
+    nvx = result['nvx']
+    nvy = result['nvy']
+    
+    print(f"Saving {len(u_history)} frames to {case_dir}...")
+    
+    # Create colormap showing diseased regions
+    sigma_elements = result['sigma_elements']
+    sigma_h = np.min(sigma_elements)  # Healthy tissue diffusivity
+    
+    # Create mesh grid for plotting
+    x = np.linspace(0, 1, nvx)
+    y = np.linspace(0, 1, nvy)
+    X, Y = np.meshgrid(x, y, indexing='ij')
+    
+    # Plot and save each frame
+    for i, (u, t) in enumerate(zip(u_history, times)):
+        fig, ax = plt.subplots(figsize=(10, 10))
+        
+        # Reshape solution to grid
+        u_grid = u.reshape(nvx, nvy, order='F')
+        
+        # Plot solution
+        im = ax.imshow(u_grid, origin='lower', extent=[0, 1, 0, 1], 
+                       vmin=0, vmax=1, cmap='viridis')
+        
+        # Add diseased regions outlines
+        circle1 = plt.Circle((0.3, 0.7), 0.1, fill=False, color='r', linestyle='--')
+        circle2 = plt.Circle((0.7, 0.3), 0.15, fill=False, color='r', linestyle='--')
+        circle3 = plt.Circle((0.5, 0.5), 0.1, fill=False, color='r', linestyle='--')
+        ax.add_patch(circle1)
+        ax.add_patch(circle2)
+        ax.add_patch(circle3)
+        
+        # Add colorbar
+        plt.colorbar(im, ax=ax)
+        
+        # Add title
+        ax.set_title(f't = {t:.2f}')
+        
+        # Add axes labels
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        
+        # Save figure
+        frame_path = os.path.join(case_dir, f'frame_{i:04d}.png')
+        plt.savefig(frame_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        
+        if i % 10 == 0:
+            print(f"  Saved frame {i}/{len(u_history)}")
+    
+    # Copy create_video.sh to the directory
+    create_video_script = """#!/bin/bash
+# Script to create video from frame sequence
+# Requires ffmpeg to be installed
+
+# Navigate to the script's directory to ensure we find the files
+cd "$(dirname "$0")"
+echo "Working directory: $(pwd)"
+echo "Creating videos from $(ls frame_*.png | wc -l) frames..."
+ls -l frame_0000.png 2>/dev/null || echo "Warning: Cannot find first frame!"
+
+# Create MP4 video (high quality, 10 fps)
+ffmpeg -y -r 10 -i frame_%04d.png -vf "pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2:color=white" -c:v libx264 -pix_fmt yuv420p -crf 18 {case_name}_wave_propagation.mp4
+
+# Create WebM video (web-friendly, 10 fps)
+# ffmpeg -y -r 10 -i frame_%04d.png -vf "pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2:color=white" -c:v libvpx-vp9 -crf 30 -b:v 0 {case_name}_wave_propagation.webm
+
+# Create animated GIF (lower quality, smaller file)
+# ffmpeg -y -r 5 -i frame_%04d.png -vf "scale=640:512,pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2:color=white" {case_name}_wave_propagation.gif
+
+echo "Video compilation completed!"
+echo "Generated files:"
+echo "  {case_name}_wave_propagation.mp4 (high quality)"
+# echo "  {case_name}_wave_propagation.webm (web format)"
+# echo "  {case_name}_wave_propagation.gif (animated GIF)"
+""".format(case_name=case_name)
+    
+    script_path = os.path.join(case_dir, 'create_video.sh')
+    with open(script_path, 'w') as f:
+        f.write(create_video_script)
+    
+    # Make script executable
+    os.chmod(script_path, 0o755)
+    
+    print(f"Saved {len(u_history)} frames and create_video.sh script to {case_dir}")
+    print(f"To create video, run: cd {case_dir} && ./create_video.sh")
+
 # Test the solver
 if __name__ == "__main__":
+    # Fixed parameters
+    generate_frames = True
+    output_dir = '../frames'
+    nvx = 101
+    nvy = 101
+    dt = 0.1
+    T = 35.0
+
     # Problem parameters from the PDF
     sigma_h = 9.5298e-4  # Healthy tissue diffusivity
     a = 18.515
-    fr = 0.2383
-    ft = 0.0
+    ft = 0.2383
+    fr = 0.0
     fd = 1.0
-    T = 35.0  # Final time
-    
+
     # Test with different parameters
     test_cases = [
-        {'nvx': 33, 'nvy': 33, 'dt': 0.1, 'sigma_d_factor': 10.0},   # 10*Σh
-        {'nvx': 33, 'nvy': 33, 'dt': 0.1, 'sigma_d_factor': 1.0},    # Σh  
-        {'nvx': 33, 'nvy': 33, 'dt': 0.1, 'sigma_d_factor': 0.1},    # 0.1*Σh
+        {'nvx': nvx, 'nvy': nvy, 'dt': dt, 'sigma_d_factor': 10.0, 'name': 'High_Diffusivity_10x'},   # 10*Σh
+        {'nvx': nvx, 'nvy': nvy, 'dt': dt, 'sigma_d_factor': 1.0, 'name': 'Normal_Diffusivity_1x'},   # Σh
+        {'nvx': nvx, 'nvy': nvy, 'dt': dt, 'sigma_d_factor': 0.1, 'name': 'Low_Diffusivity_01x'},    # 0.1*Σh
     ]
-    
+
     results = []
-    
+
     for i, case in enumerate(test_cases):
         print(f"\n{'='*60}")
         print(f"Running test case {i+1}: σd = {case['sigma_d_factor']}*σh")
         print(f"{'='*60}")
-        
+
         result = monodomain_solver(
             nvx=case['nvx'],
-            nvy=case['nvy'], 
+            nvy=case['nvy'],
             T=T,
             dt=case['dt'],
             sigma_h=sigma_h,
             sigma_d_factor=case['sigma_d_factor'],
             a=a, fr=fr, ft=ft, fd=fd
         )
-        
+
         results.append(result)
-        
+
         # Compute activation time statistics
         finite_activation_times = result['activation_times'][result['activation_times'] < np.inf]
         if len(finite_activation_times) > 0:
@@ -289,7 +402,11 @@ if __name__ == "__main__":
             print(f"  Last activation: {np.max(finite_activation_times):.3f}")
         else:
             print("No nodes activated during simulation")
-    
+
+        # Generate frames if requested
+        if generate_frames:
+            save_solution_frames(result, output_dir, case['name'])
+
     print(f"\n{'='*60}")
     print("All test cases completed!")
     print(f"{'='*60}")

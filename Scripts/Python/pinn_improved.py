@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import time
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('mps' if torch.mps.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 class CustomActivation(nn.Module):
@@ -17,8 +17,8 @@ class CustomActivation(nn.Module):
     def __init__(self):
         super(CustomActivation, self).__init__()
         # Initialize with better values
-        self.A = nn.Parameter(torch.tensor(1.0))
-        self.B = nn.Parameter(torch.tensor(1.0))
+        self.A = nn.Parameter(torch.tensor(0.5))
+        self.B = nn.Parameter(torch.tensor(-5.0))
     
     def forward(self, x):
         return self.A * (1 - torch.tanh(self.B * x))
@@ -26,7 +26,7 @@ class CustomActivation(nn.Module):
 class ImprovedPINN(nn.Module):
     """Improved PINN with better architecture and physics implementation"""
     
-    def __init__(self, layers=[3, 64, 64, 64, 64, 1]):
+    def __init__(self, layers=[3, 64, 64, 64, 1]):
         super(ImprovedPINN, self).__init__()
         
         self.layers = nn.ModuleList()
@@ -270,10 +270,11 @@ def train_improved_pinn(model, epochs=5000, lr=1e-3, sigma_factor=1.0):
         # Track best model
         if total_loss.item() < best_loss:
             best_loss = total_loss.item()
+            # Save in a temporary location during training
             torch.save(model.state_dict(), '/tmp/best_pinn_model.pth')
         
         # Print progress
-        if epoch % 500 == 0:
+        if epoch % 50 == 0:
             elapsed = time.time() - start_time
             print(f"  Epoch {epoch:4d} | Loss: {total_loss:.2e} | Physics: {physics_loss:.2e} | "
                   f"BC: {boundary_loss:.2e} | IC: {initial_loss:.2e} | Time: {elapsed:.1f}s")
@@ -285,9 +286,14 @@ def train_improved_pinn(model, epochs=5000, lr=1e-3, sigma_factor=1.0):
     # Load best model
     model.load_state_dict(torch.load('/tmp/best_pinn_model.pth'))
     
+    # Save the model permanently
+    model_save_path = f'improved_pinn_sigma{sigma_factor}.pth'
+    torch.save(model.state_dict(), model_save_path)
+    
     training_time = time.time() - start_time
     print(f"Training completed in {training_time:.2f} seconds")
     print(f"Best loss: {best_loss:.2e}")
+    print(f"Model saved to {model_save_path}")
     
     return model, losses
 
@@ -322,23 +328,99 @@ def evaluate_improved_pinn(model, nx=33, ny=33, nt=101, T=8.0):
     
     return np.array(solutions), t_vals.numpy()
 
-# Test the improved implementation
-if __name__ == "__main__":
-    print("Testing Improved PINN Implementation")
-    print("=" * 40)
+def load_trained_model(model_path, device='cpu'):
+    """Load a previously trained PINN model
     
-    # Create improved model
+    Args:
+        model_path (str): Path to the saved model file (.pth)
+        device (str): Device to load the model on ('cpu' or 'cuda' or 'mps')
+        
+    Returns:
+        ImprovedPINN: Loaded model
+    """
+    # Create a new model instance
     model = ImprovedPINN(layers=[3, 64, 64, 64, 64, 1])
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {total_params}")
     
-    print("\nInitial activation parameters:")
+    # Load state dict
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model = model.to(device)
+    
+    print(f"Model loaded from {model_path}")
+    print("Activation parameters:")
     for i, activation in enumerate(model.activations):
         print(f"  Layer {i+1}: A={activation.A.item():.4f}, B={activation.B.item():.4f}")
     
-    # Train for normal diffusivity case
-    print(f"\nTraining for normal diffusivity case...")
-    trained_model, losses = train_improved_pinn(model, epochs=3000, lr=1e-3, sigma_factor=1.0)
+    return model
+
+# Esempio di utilizzo di un modello salvato
+def use_saved_model_example():
+    """Example of how to load and use a saved model"""
+    # Path to the saved model
+    model_path = 'improved_pinn_sigma1.0.pth'
+    
+    # Check if the file exists
+    import os
+    if not os.path.exists(model_path):
+        print(f"Model file {model_path} not found. Please train the model first.")
+        return
+    
+    # Load the model
+    model = load_trained_model(model_path, device)
+    
+    # Evaluate the model
+    solutions, times = evaluate_improved_pinn(model)
+    
+    # Visualize results
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    times_to_plot = [0, len(times)//2, -1]
+    titles = ['t=0', f't={times[len(times)//2]:.1f}', f't={times[-1]:.1f}']
+    
+    for i, (t_idx, title) in enumerate(zip(times_to_plot, titles)):
+        im = axes[i].imshow(solutions[t_idx], origin='lower', cmap='viridis', vmin=0, vmax=1)
+        axes[i].set_title(title)
+        axes[i].set_aspect('equal')
+        plt.colorbar(im, ax=axes[i])
+    
+    plt.tight_layout()
+    plt.savefig('loaded_model_results.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print("Results from loaded model saved as 'loaded_model_results.png'")
+
+# Test the improved implementation
+if __name__ == "__main__":
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train or use Improved PINN')
+    parser.add_argument('--load', help='Path to saved model to load', type=str, default=None)
+    parser.add_argument('--epochs', help='Number of epochs to train', type=int, default=3000)
+    parser.add_argument('--sigma', help='Diffusivity factor', type=float, default=1.0)
+    args = parser.parse_args()
+    
+    print("Improved PINN Implementation")
+    print("=" * 40)
+    
+    if args.load:
+        # Load and evaluate existing model
+        print(f"Loading model from {args.load}...")
+        model = load_trained_model(args.load, device)
+        trained_model = model  # for consistency with code below
+    else:
+        # Create and train new model
+        print("Creating new model...")
+        model = ImprovedPINN(layers=[3, 64, 64, 64, 64, 1])
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"Model parameters: {total_params}")
+        
+        print("\nInitial activation parameters:")
+        for i, activation in enumerate(model.activations):
+            print(f"  Layer {i+1}: A={activation.A.item():.4f}, B={activation.B.item():.4f}")
+        
+        # Train for normal diffusivity case
+        print(f"\nTraining for diffusivity case (sigma_factor={args.sigma})...")
+        trained_model, losses = train_improved_pinn(model, epochs=args.epochs, lr=1e-3, sigma_factor=args.sigma)
     
     print("\nFinal activation parameters:")
     for i, activation in enumerate(trained_model.activations):
@@ -365,7 +447,7 @@ if __name__ == "__main__":
         plt.colorbar(im, ax=axes[i])
     
     plt.tight_layout()
-    plt.savefig('/home/ubuntu/improved_pinn_test.png', dpi=150, bbox_inches='tight')
+    plt.savefig('improved_pinn_test.png', dpi=150, bbox_inches='tight')
     plt.close()
     
     print("Test visualization saved as 'improved_pinn_test.png'")
