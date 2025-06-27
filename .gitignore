@@ -323,3 +323,10 @@ TSWLatexianTemp*
 # macOS
 .DS_Store
 *.DS_Store
+
+
+# images png
+*.png
+
+# ignore .csv 
+*.csv
