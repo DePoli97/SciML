@@ -26,7 +26,7 @@ NVX = NVY = 101
 
 def run_fem_simulation(case_name, sigma_d_factor):
     """Esegue una singola simulazione FEM e genera i frame/video."""
-    output_dir = os.path.join('Assets', 'frames', 'fem')
+    output_dir = os.path.join('assets', 'frames', 'fem')
     
     solver = FEMSolver(nvx=NVX, nvy=NVY, sigma_h=SIGMA_H, a=A, fr=FR, ft=FT, fd=FD)
     
