@@ -94,7 +94,7 @@ def generate_pinn_frames(case='normal'):
         fd=FD
     ).to(DEVICE)
     
-    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
     model.eval()
 
     case_name = f"PINN_Prediction_{case_display}"
