@@ -30,7 +30,7 @@ print(f"Usando dispositivo: {DEVICE}")
 
 def run_fem_simulation(case_name, sigma_d_factor):
     """Esegue una singola simulazione FEM e genera i frame/video."""
-    output_dir = os.path.join('assets', 'frames', 'fem')
+    output_dir = os.path.join('assets', 'fem')
     
     solver = FEMSolver(nvx=NVX, nvy=NVY, sigma_h=SIGMA_H, a=A, fr=FR, ft=FT, fd=FD)
     
@@ -96,7 +96,7 @@ def generate_pinn_frames(case='normal'):
     model.eval()
 
     case_name = f"PINN_Prediction_{case_display}"
-    frame_dir = os.path.join('assets', 'frames', 'pinn', case_name)
+    frame_dir = os.path.join('assets', 'pinn', case_name)
     os.makedirs(frame_dir, exist_ok=True)
 
     print(f"Generazione frame dalla PINN in: {frame_dir}")

@@ -94,7 +94,7 @@ class FEMSolver:
         
         u = self._setup_initial_condition()
         
-        frame_dir = os.path.join(output_dir, case_name)
+        frame_dir = os.path.join(output_dir, case_name, 'frames')
         os.makedirs(frame_dir, exist_ok=True)
         
         print("  Avvio ciclo di integrazione temporale...")

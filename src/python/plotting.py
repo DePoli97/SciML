@@ -39,8 +39,8 @@ def create_single_frame(u_data, nvx, nvy, time_val, case_name, vmin=0, vmax=1):
 
 def create_video_from_frames(frame_dir, case_name, fps=10):
     """Crea un video MP4 dai frame usando ffmpeg."""
-    video_path = os.path.join(frame_dir, f"{case_name}.mp4")
     frame_pattern = os.path.join(frame_dir, "frame_%04d.png")
+    video_path = os.path.join(frame_dir, '..', f"{case_name}.mp4")
     
     print(f"Creazione video: {video_path}")
     
