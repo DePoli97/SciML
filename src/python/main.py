@@ -22,6 +22,8 @@ T = 35.0
 DT = 0.1
 NVX = NVY = 101
 
+
+
 # --- Configurazione dispositivo ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 print(f"Usando dispositivo: {DEVICE}")
@@ -60,7 +62,7 @@ def train_pinn_model():
         fd=FD
     ).to(DEVICE)
     
-    trainer = PINNTrainer(pinn, learning_rate=1e-3, device=DEVICE, T=T)
+    trainer = PINNTrainer(pinn, device=DEVICE, T=T)
     
     trainer.train(n_epochs=10000, n_points_pde=4096, n_points_ic=1024)
     

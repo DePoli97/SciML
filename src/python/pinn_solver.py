@@ -18,7 +18,7 @@ class CustomActivation(nn.Module):
 
 class PINNSolver(nn.Module):
     """Risolve l'equazione del monodominio usando una PINN."""
-    def __init__(self, layers=[3, 64, 64, 64, 1], device=None, sigma_h=9.5298e-4, a=18.515, fr=0.0, ft=0.2383, fd=1.0):
+    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 64, 64, 64, 1]):
         super(PINNSolver, self).__init__()
         
         self.device = device if device is not None else torch.device('cpu')
