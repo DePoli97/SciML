@@ -2,10 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
 import time
-
-device = torch.device('mps' if torch.mps.is_available() else 'cpu')
 
 class CustomActivation(nn.Module):
     def __init__(self):
@@ -18,9 +15,10 @@ class CustomActivation(nn.Module):
 
 class PINNSolver(nn.Module):
     """Risolve l'equazione del monodominio usando una PINN."""
-    def __init__(self, layers=[3, 64, 64, 64, 1], case='normal'):
+    def __init__(self, layers=[3, 64, 64, 64, 1], device=None, sigma_h=9.5298e-4, a=18.515, fr=0.0, ft=0.2383, fd=1.0):
         super(PINNSolver, self).__init__()
         
+        self.device = device if device is not None else torch.device('cpu')
         self.layers = nn.ModuleList()
         self.activations = nn.ModuleList()
         
@@ -32,17 +30,11 @@ class PINNSolver(nn.Module):
         self.init_weights()
         
         # Parametri fisici (possono essere aggiornati)
-        if case == 'high':
-            self.sigma_h = 9.5298e-3  # 10x
-        elif case == 'low':
-            self.sigma_h = 9.5298e-5  # 0.1x
-        else: # normal
-            self.sigma_h = 9.5298e-4
-
-        self.a = 18.515
-        self.fr = 0.2383
-        self.ft = 0.0
-        self.fd = 1.0
+        self.sigma_h = sigma_h
+        self.a = a
+        self.fr = fr
+        self.ft = ft
+        self.fd = fd
 
     def init_weights(self):
         for layer in self.layers:
@@ -76,8 +68,10 @@ class PINNSolver(nn.Module):
         return torch.mean(pde_residual**2)
 
 class PINNTrainer:
-    def __init__(self, model, learning_rate=1e-3):
-        self.model = model.to(device)
+    def __init__(self, model, learning_rate=1e-3, device=None, T=35.0):
+        self.device = device if device is not None else torch.device('cpu')
+        self.model = model.to(self.device)
+        self.T = T
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', patience=500, factor=0.5)
 
@@ -89,15 +83,15 @@ class PINNTrainer:
             self.optimizer.zero_grad()
             
             # 1. Loss fisica (punti nel dominio)
-            x_pde = torch.rand(n_points_pde, 1, device=device, requires_grad=True)
-            y_pde = torch.rand(n_points_pde, 1, device=device, requires_grad=True)
-            t_pde = torch.rand(n_points_pde, 1, device=device, requires_grad=True) * 35.0 # T=35
+            x_pde = torch.rand(n_points_pde, 1, device=self.device, requires_grad=True)
+            y_pde = torch.rand(n_points_pde, 1, device=self.device, requires_grad=True)
+            t_pde = torch.rand(n_points_pde, 1, device=self.device, requires_grad=True) * self.T
             loss_pde = self.model.get_physics_loss(x_pde, y_pde, t_pde)
             
             # 2. Loss condizione iniziale
-            x_ic = torch.rand(n_points_ic, 1, device=device)
-            y_ic = torch.rand(n_points_ic, 1, device=device)
-            t_ic = torch.zeros(n_points_ic, 1, device=device)
+            x_ic = torch.rand(n_points_ic, 1, device=self.device)
+            y_ic = torch.rand(n_points_ic, 1, device=self.device)
+            t_ic = torch.zeros(n_points_ic, 1, device=self.device)
             u_ic_pred = self.model(x_ic, y_ic, t_ic)
             
             u_ic_true = torch.zeros_like(u_ic_pred)

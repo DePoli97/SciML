@@ -22,6 +22,10 @@ T = 35.0
 DT = 0.1
 NVX = NVY = 101
 
+# --- Configurazione dispositivo ---
+DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+print(f"Usando dispositivo: {DEVICE}")
+
 # --- Funzioni di Esecuzione ---
 
 def run_fem_simulation(case_name, sigma_d_factor):
@@ -45,8 +49,16 @@ def train_pinn_model():
     model_path = os.path.join('models', 'best_pinn_model.pth')
     os.makedirs('models', exist_ok=True)
     
-    pinn = PINNSolver()  # Senza specificare il case, userà il default ('normal')
-    trainer = PINNTrainer(pinn, learning_rate=1e-3)
+    pinn = PINNSolver(
+        device=DEVICE,
+        sigma_h=SIGMA_H,
+        a=A,
+        fr=FR,
+        ft=FT,
+        fd=FD
+    ).to(DEVICE)
+    
+    trainer = PINNTrainer(pinn, learning_rate=1e-3, device=DEVICE, T=T)
     
     trainer.train(n_epochs=10000, n_points_pde=4096, n_points_ic=1024)
     
@@ -60,21 +72,27 @@ def generate_pinn_frames(case='normal'):
         print(f"Errore: Modello non trovato in {model_path}. Esegui prima il training.")
         return
 
-    device = torch.device('mps' if torch.mps.is_available() else 'cpu')
-    model = PINNSolver().to(device)
-    model.load_state_dict(torch.load(model_path))
-    
-    # Aggiorniamo il valore di sigma_h in base al caso
+    # Calcoliamo sigma_h in base al caso
     if case == 'high':
-        model.sigma_h = SIGMA_H * 10.0
+        sigma_h_value = SIGMA_H * 10.0
         case_display = 'High_Diffusivity_10x'
     elif case == 'low':
-        model.sigma_h = SIGMA_H * 0.1
+        sigma_h_value = SIGMA_H * 0.1
         case_display = 'Low_Diffusivity_01x'
     else:  # normal
-        model.sigma_h = SIGMA_H
+        sigma_h_value = SIGMA_H
         case_display = 'Normal_Diffusivity_1x'
-        
+    
+    model = PINNSolver(
+        device=DEVICE,
+        sigma_h=sigma_h_value,
+        a=A, 
+        fr=FR, 
+        ft=FT, 
+        fd=FD
+    ).to(DEVICE)
+    
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
     model.eval()
 
     case_name = f"PINN_Prediction_{case_display}"
@@ -86,8 +104,8 @@ def generate_pinn_frames(case='normal'):
     x = np.linspace(0, 1, NVX)
     y = np.linspace(0, 1, NVY)
     X, Y = np.meshgrid(x, y, indexing='ij')
-    x_flat = torch.tensor(X.flatten(), dtype=torch.float32).view(-1, 1).to(device)
-    y_flat = torch.tensor(Y.flatten(), dtype=torch.float32).view(-1, 1).to(device)
+    x_flat = torch.tensor(X.flatten(), dtype=torch.float32).view(-1, 1).to(DEVICE)
+    y_flat = torch.tensor(Y.flatten(), dtype=torch.float32).view(-1, 1).to(DEVICE)
 
     num_frames = 100
     times = np.linspace(0, T, num_frames)
