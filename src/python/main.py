@@ -34,6 +34,7 @@ def run_fem_simulation(case_name, sigma_d_factor):
     
     solver = FEMSolver(nvx=NVX, nvy=NVY, sigma_h=SIGMA_H, a=A, fr=FR, ft=FT, fd=FD)
     
+    # Il frame_dir è il percorso della directory dei frame
     frame_dir = solver.solve(
         T=T, 
         dt=DT, 
@@ -42,6 +43,7 @@ def run_fem_simulation(case_name, sigma_d_factor):
         output_dir=output_dir
     )
     
+    # Crea il video dai frame
     create_video_from_frames(frame_dir, case_name)
 
 def train_pinn_model():
@@ -96,32 +98,24 @@ def generate_pinn_frames(case='normal'):
     model.eval()
 
     case_name = f"PINN_Prediction_{case_display}"
-    frame_dir = os.path.join('assets', 'pinn', case_name)
-    os.makedirs(frame_dir, exist_ok=True)
+    output_dir = os.path.join('assets', 'pinn', case_name)
+    frames_dir = os.path.join(output_dir, 'frames')
+    os.makedirs(frames_dir, exist_ok=True)
 
-    print(f"Generazione frame dalla PINN in: {frame_dir}")
+    print(f"Generazione frame dalla PINN in: {frames_dir}")
 
-    x = np.linspace(0, 1, NVX)
-    y = np.linspace(0, 1, NVY)
-    X, Y = np.meshgrid(x, y, indexing='ij')
-    x_flat = torch.tensor(X.flatten(), dtype=torch.float32).view(-1, 1).to(DEVICE)
-    y_flat = torch.tensor(Y.flatten(), dtype=torch.float32).view(-1, 1).to(DEVICE)
-
-    num_frames = 100
-    times = np.linspace(0, T, num_frames)
-
-    for i, t_val in enumerate(times):
-        t_tensor = torch.full_like(x_flat, t_val)
-        with torch.no_grad():
-            u_pred = model(x_flat, y_flat, t_tensor).cpu().numpy()
-        
-        fig = create_single_frame(u_pred, NVX, NVY, t_val, case_name)
-        plt.savefig(os.path.join(frame_dir, f'frame_{i:04d}.png'))
-        plt.close(fig)
-        if (i + 1) % 10 == 0:
-            print(f"  Frame {i+1}/{num_frames} generato.")
-
-    create_video_from_frames(frame_dir, case_name)
+    # Genera i frames usando il metodo della PINN
+    frames_dir = model.generate_frames(
+        T=T,
+        nvx=NVX,
+        nvy=NVY,
+        case_name=case_name,
+        output_dir=frames_dir,
+        num_frames=100
+    )
+    
+    # Crea il video dai frame
+    create_video_from_frames(frames_dir, case_name)
 
 # --- Interfaccia a Riga di Comando ---
 

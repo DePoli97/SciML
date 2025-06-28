@@ -2,6 +2,9 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import os
 import time
 
 class CustomActivation(nn.Module):
@@ -66,6 +69,37 @@ class PINNSolver(nn.Module):
         # Residuo della PDE
         pde_residual = u_t - self.sigma_h * laplacian + reaction
         return torch.mean(pde_residual**2)
+
+    def generate_frames(self, T, nvx, nvy, case_name, output_dir, num_frames=100):
+        """Genera i frame delle predizioni dal modello PINN."""
+        from .plotting import create_single_frame
+        
+        print(f"Generazione frame dalla PINN per il caso: {case_name}")
+        
+        # Crea la directory per i frame se non esiste
+        os.makedirs(output_dir, exist_ok=True)
+        
+        x = np.linspace(0, 1, nvx)
+        y = np.linspace(0, 1, nvy)
+        X, Y = np.meshgrid(x, y, indexing='ij')
+        x_flat = torch.tensor(X.flatten(), dtype=torch.float32).view(-1, 1).to(self.device)
+        y_flat = torch.tensor(Y.flatten(), dtype=torch.float32).view(-1, 1).to(self.device)
+        
+        times = np.linspace(0, T, num_frames)
+        
+        for i, t_val in enumerate(times):
+            t_tensor = torch.full_like(x_flat, t_val)
+            with torch.no_grad():
+                u_pred = self(x_flat, y_flat, t_tensor).cpu().numpy()
+            
+            fig = create_single_frame(u_pred, nvx, nvy, t_val, case_name)
+            plt.savefig(os.path.join(output_dir, f'frame_{i:04d}.png'))
+            plt.close(fig)
+            if (i + 1) % 10 == 0:
+                print(f"  Frame {i+1}/{num_frames} generato.")
+                
+        print(f"  {num_frames} frame salvati in: {output_dir}")
+        return output_dir
 
 class PINNTrainer:
     def __init__(self, model, learning_rate=1e-3, device=None, T=35.0):
