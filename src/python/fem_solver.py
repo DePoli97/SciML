@@ -63,10 +63,11 @@ class FEMSolver:
         for i in range(self.nvx-1):
             for j in range(self.nvy-1):
                 e = i * (self.nvy-1) + j
-                x_c, y_c = X_centers[i, j], Y_centers[i, j]
-                d3 = (x_c - 0.3)**2 + (y_c - 0.7)**2 < 0.1**2
-                d2 = (x_c - 0.7)**2 + (y_c - 0.3)**2 < 0.15**2
+                x_c, y_c = Y_centers[i, j], X_centers[i, j]
                 d1 = (x_c - 0.5)**2 + (y_c - 0.5)**2 < 0.1**2
+                d2 = (x_c - 0.7)**2 + (y_c - 0.3)**2 < 0.15**2
+                d3 = (x_c - 0.3)**2 + (y_c - 0.7)**2 < 0.1**2
+                
                 if d1 or d2 or d3:
                     sigma_elements[e] = sigma_d_factor * self.sigma_h
         return sigma_elements
