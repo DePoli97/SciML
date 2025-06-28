@@ -70,36 +70,53 @@ class PINNSolver(nn.Module):
         pde_residual = u_t - self.sigma_h * laplacian + reaction
         return torch.mean(pde_residual**2)
 
-    def generate_frames(self, T, nvx, nvy, case_name, output_dir, num_frames=100):
-        """Genera i frame delle predizioni dal modello PINN."""
-        from .plotting import create_single_frame
+    def compute_solution(self, T, nvx, nvy, num_frames=100):
+        """
+        Calcola la soluzione numerica per diversi istanti temporali.
         
-        print(f"Generazione frame dalla PINN per il caso: {case_name}")
+        Args:
+            T (float): Tempo finale della simulazione.
+            nvx (int): Numero di punti nella direzione x.
+            nvy (int): Numero di punti nella direzione y.
+            num_frames (int, optional): Numero di frame temporali da calcolare. Default 100.
+            
+        Returns:
+            dict: Un dizionario contenente:
+                - 'x': coordinate x della griglia.
+                - 'y': coordinate y della griglia.
+                - 'times': array dei tempi simulati.
+                - 'solutions': lista di soluzioni per ogni istante temporale.
+        """
+        print("Calcolo della soluzione PINN...")
         
-        # Crea la directory per i frame se non esiste
-        os.makedirs(output_dir, exist_ok=True)
-        
+        # Prepara la griglia
         x = np.linspace(0, 1, nvx)
         y = np.linspace(0, 1, nvy)
         X, Y = np.meshgrid(x, y, indexing='ij')
         x_flat = torch.tensor(X.flatten(), dtype=torch.float32).view(-1, 1).to(self.device)
         y_flat = torch.tensor(Y.flatten(), dtype=torch.float32).view(-1, 1).to(self.device)
         
+        # Calcola la soluzione per diversi istanti di tempo
         times = np.linspace(0, T, num_frames)
+        solutions = []
         
         for i, t_val in enumerate(times):
             t_tensor = torch.full_like(x_flat, t_val)
             with torch.no_grad():
                 u_pred = self(x_flat, y_flat, t_tensor).cpu().numpy()
+                # Reshaping per ottenere una griglia 2D
+                u_grid = u_pred.reshape(nvx, nvy, order='F')
+                solutions.append(u_grid)
             
-            fig = create_single_frame(u_pred, nvx, nvy, t_val, case_name)
-            plt.savefig(os.path.join(output_dir, f'frame_{i:04d}.png'))
-            plt.close(fig)
             if (i + 1) % 10 == 0:
-                print(f"  Frame {i+1}/{num_frames} generato.")
-                
-        print(f"  {num_frames} frame salvati in: {output_dir}")
-        return output_dir
+                print(f"  Istante {i+1}/{num_frames} calcolato (t={t_val:.2f}).")
+        
+        return {
+            'x': x,
+            'y': y,
+            'times': times,
+            'solutions': solutions
+        }
 
 class PINNTrainer:
     def __init__(self, model, learning_rate=1e-3, device=None, T=35.0):

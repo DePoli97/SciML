@@ -33,17 +33,37 @@ print(f"Usando dispositivo: {DEVICE}")
 def run_fem_simulation(case_name, sigma_d_factor):
     """Esegue una singola simulazione FEM e genera i frame/video."""
     output_dir = os.path.join('assets', 'fem')
+    frame_dir = os.path.join(output_dir, case_name, 'frames')
+    os.makedirs(frame_dir, exist_ok=True)
     
+    # Crea il solver e calcola la soluzione
     solver = FEMSolver(nvx=NVX, nvy=NVY, sigma_h=SIGMA_H, a=A, fr=FR, ft=FT, fd=FD)
     
-    # Il frame_dir è il percorso della directory dei frame
-    frame_dir = solver.solve(
+    print(f"Esecuzione simulazione FEM per il caso: {case_name}")
+    solution_data = solver.compute_solution(
         T=T, 
         dt=DT, 
-        sigma_d_factor=sigma_d_factor, 
-        case_name=case_name, 
-        output_dir=output_dir
+        sigma_d_factor=sigma_d_factor
     )
+    
+    # Genera i frame dalle soluzioni calcolate
+    print(f"Generazione dei frame per il caso {case_name}...")
+    times = solution_data['times']
+    solutions = solution_data['solutions']
+    
+    from .plotting import create_single_frame
+    for i, (t, solution) in enumerate(zip(times, solutions)):
+        # Appiattire la soluzione per create_single_frame
+        u_flat = solution.flatten(order='F')
+        
+        fig = create_single_frame(u_flat, NVX, NVY, t, case_name)
+        plt.savefig(os.path.join(frame_dir, f'frame_{i:04d}.png'))
+        plt.close(fig)
+        
+        if (i + 1) % 10 == 0:
+            print(f"  Frame {i+1}/{len(times)} generato.")
+    
+    print(f"  {len(times)} frame salvati in: {frame_dir}")
     
     # Crea il video dai frame
     create_video_from_frames(frame_dir, case_name)
@@ -87,6 +107,7 @@ def generate_pinn_frames(case='normal'):
         sigma_h_value = SIGMA_H
         case_display = 'Normal_Diffusivity_1x'
     
+    # Inizializza il modello PINN
     model = PINNSolver(
         device=DEVICE,
         sigma_h=sigma_h_value,
@@ -96,25 +117,43 @@ def generate_pinn_frames(case='normal'):
         fd=FD
     ).to(DEVICE)
     
+    # Carica i pesi pre-addestrati
     model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
     model.eval()
 
+    # Configura le directory di output
     case_name = f"PINN_Prediction_{case_display}"
-    output_dir = os.path.join('assets', 'pinn', case_name)
-    frames_dir = os.path.join(output_dir, 'frames')
+    output_dir = os.path.join('assets', 'pinn')
+    frames_dir = os.path.join(output_dir, case_name, 'frames')
     os.makedirs(frames_dir, exist_ok=True)
 
-    print(f"Generazione frame dalla PINN in: {frames_dir}")
-
-    # Genera i frames usando il metodo della PINN
-    frames_dir = model.generate_frames(
+    # Calcola la soluzione utilizzando il metodo compute_solution
+    print(f"Calcolo della soluzione PINN per il caso: {case_name}")
+    solution_data = model.compute_solution(
         T=T,
         nvx=NVX,
         nvy=NVY,
-        case_name=case_name,
-        output_dir=frames_dir,
         num_frames=100
     )
+    
+    # Genera i frame dalle soluzioni calcolate
+    print(f"Generazione dei frame per il caso {case_name}...")
+    times = solution_data['times']
+    solutions = solution_data['solutions']
+    
+    from .plotting import create_single_frame
+    for i, (t, solution) in enumerate(zip(times, solutions)):
+        # Appiattire la soluzione per create_single_frame
+        u_flat = solution.flatten(order='F')
+        
+        fig = create_single_frame(u_flat, NVX, NVY, t, case_name)
+        plt.savefig(os.path.join(frames_dir, f'frame_{i:04d}.png'))
+        plt.close(fig)
+        
+        if (i + 1) % 10 == 0:
+            print(f"  Frame {i+1}/{len(times)} generato.")
+    
+    print(f"  {len(times)} frame salvati in: {frames_dir}")
     
     # Crea il video dai frame
     create_video_from_frames(frames_dir, case_name)

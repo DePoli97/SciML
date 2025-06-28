@@ -80,9 +80,24 @@ class FEMSolver:
         u0[(X >= 0.9) & (Y >= 0.9)] = 1.0
         return u0.flatten(order='F')
 
-    def solve(self, T, dt, sigma_d_factor, case_name, output_dir):
-        print(f"Avvio solver FEM per il caso: {case_name}")
-        start_time = time.time()
+    def compute_solution(self, T, dt, sigma_d_factor, num_frames=100):
+        """
+        Calcola la soluzione numerica per diversi istanti temporali.
+        
+        Args:
+            T (float): Tempo finale della simulazione.
+            dt (float): Passo temporale.
+            sigma_d_factor (float): Fattore di scala per la diffusività nelle regioni speciali.
+            num_frames (int, optional): Numero di frame temporali da salvare. Default 100.
+            
+        Returns:
+            dict: Un dizionario contenente:
+                - 'x': coordinate x della griglia.
+                - 'y': coordinate y della griglia.
+                - 'times': array dei tempi simulati.
+                - 'solutions': lista di soluzioni per ogni istante temporale.
+        """
+        print("Calcolo della soluzione FEM...")
         
         nt = int(T / dt)
         sigma_elements = self._setup_diffusivity(sigma_d_factor)
@@ -94,18 +109,14 @@ class FEMSolver:
         
         u = self._setup_initial_condition()
         
-        frame_dir = os.path.join(output_dir, case_name, 'frames')
-        os.makedirs(frame_dir, exist_ok=True)
-        
         print("  Avvio ciclo di integrazione temporale...")
-        save_every = max(1, int(nt / 100)) # Save ~100 frames
-        frame_count = 0
+        save_every = max(1, int(nt / (num_frames-1))) # Salva ~num_frames frames
         
-        # Salva frame iniziale
-        fig = create_single_frame(u, self.nvx, self.nvy, 0.0, case_name)
-        plt.savefig(os.path.join(frame_dir, f'frame_{frame_count:04d}.png'))
-        plt.close(fig)
-        frame_count += 1
+        # Prepara array per x, y e risultati
+        x = np.linspace(0, 1, self.nvx)
+        y = np.linspace(0, 1, self.nvy)
+        times = [0.0]  # Tempo iniziale
+        solutions = [u.reshape(self.nvx, self.nvy, order='F')]  # Soluzione iniziale
         
         for n in range(nt):
             t = (n + 1) * dt
@@ -115,15 +126,61 @@ class FEMSolver:
             u = u_new
             
             if n % save_every == 0 or n == nt - 1:
-                fig = create_single_frame(u, self.nvx, self.nvy, t, case_name)
-                plt.savefig(os.path.join(frame_dir, f'frame_{frame_count:04d}.png'))
-                plt.close(fig)
-                frame_count += 1
+                # Salva il tempo e la soluzione
+                times.append(t)
+                solutions.append(u.reshape(self.nvx, self.nvy, order='F'))
 
             if (n + 1) % (nt // 10) == 0:
                 print(f"    Progresso: {100 * (n+1)/nt:.0f}% (t={t:.1f}s)")
 
+        print(f"  Simulazione completata con {len(times)} istanti temporali salvati.")
+        return {
+            'x': x,
+            'y': y,
+            'times': np.array(times),
+            'solutions': solutions
+        }
+
+    def solve(self, T, dt, sigma_d_factor, case_name, output_dir):
+        """
+        Risolve il problema FEM e genera i frame delle soluzioni.
+        
+        Args:
+            T (float): Tempo finale della simulazione.
+            dt (float): Passo temporale.
+            sigma_d_factor (float): Fattore di scala per la diffusività nelle regioni speciali.
+            case_name (str): Nome del caso di simulazione.
+            output_dir (str): Directory di output per i frame.
+            
+        Returns:
+            str: Percorso della directory contenente i frame generati.
+        """
+        from .plotting import create_single_frame
+        
+        print(f"Avvio solver FEM per il caso: {case_name}")
+        start_time = time.time()
+        
+        # Crea la directory per i frame
+        frame_dir = os.path.join(output_dir, case_name, 'frames')
+        os.makedirs(frame_dir, exist_ok=True)
+        
+        # Utilizza compute_solution per ottenere i dati
+        solution_data = self.compute_solution(T, dt, sigma_d_factor)
+        times, solutions = solution_data['times'], solution_data['solutions']
+        
+        # Genera i frame dalle soluzioni
+        print(f"  Generazione dei frame per il caso {case_name}...")
+        for i, (t, solution) in enumerate(zip(times, solutions)):
+            # Appiattire la soluzione per create_single_frame
+            u_flat = solution.flatten(order='F')
+            
+            fig = create_single_frame(u_flat, self.nvx, self.nvy, t, case_name)
+            plt.savefig(os.path.join(frame_dir, f'frame_{i:04d}.png'))
+            plt.close(fig)
+            if (i + 1) % 10 == 0:
+                print(f"    Frame {i+1}/{len(times)} generato.")
+        
         end_time = time.time()
-        print(f"  Simulazione completata in {end_time - start_time:.2f} secondi.")
-        print(f"  {frame_count} frame salvati in: {frame_dir}")
+        print(f"  Simulazione e generazione frame completate in {end_time - start_time:.2f} secondi.")
+        print(f"  {len(times)} frame salvati in: {frame_dir}")
         return frame_dir
