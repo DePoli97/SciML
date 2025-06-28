@@ -332,7 +332,4 @@ __pycache__/
 *.csv
 
 # Ignore simulation frames
-Assets/frames/**/**/*.png
-
-# Ensure videos are tracked
-!Assets/frames/**/**/*.mp4
+**/frames/*.png
