@@ -320,6 +320,10 @@ TSWLatexianTemp*
 #*Notes.bib
 
 
+# Python
+__pycache__/
+*.py[cod]
+
 # macOS
 .DS_Store
 *.DS_Store
