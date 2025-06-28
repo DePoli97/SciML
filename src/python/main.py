@@ -45,7 +45,7 @@ def train_pinn_model():
     model_path = os.path.join('models', 'best_pinn_model.pth')
     os.makedirs('models', exist_ok=True)
     
-    pinn = PINNSolver()
+    pinn = PINNSolver()  # Senza specificare il case, userà il default ('normal')
     trainer = PINNTrainer(pinn, learning_rate=1e-3)
     
     trainer.train(n_epochs=10000, n_points_pde=4096, n_points_ic=1024)
@@ -53,7 +53,7 @@ def train_pinn_model():
     torch.save(pinn.state_dict(), model_path)
     print(f"Modello PINN salvato in: {model_path}")
 
-def generate_pinn_frames():
+def generate_pinn_frames(case='normal'):
     """Carica un modello PINN addestrato e genera i frame/video."""
     model_path = os.path.join('models', 'best_pinn_model.pth')
     if not os.path.exists(model_path):
@@ -63,10 +63,22 @@ def generate_pinn_frames():
     device = torch.device('mps' if torch.mps.is_available() else 'cpu')
     model = PINNSolver().to(device)
     model.load_state_dict(torch.load(model_path))
+    
+    # Aggiorniamo il valore di sigma_h in base al caso
+    if case == 'high':
+        model.sigma_h = SIGMA_H * 10.0
+        case_display = 'High_Diffusivity_10x'
+    elif case == 'low':
+        model.sigma_h = SIGMA_H * 0.1
+        case_display = 'Low_Diffusivity_01x'
+    else:  # normal
+        model.sigma_h = SIGMA_H
+        case_display = 'Normal_Diffusivity_1x'
+        
     model.eval()
 
-    case_name = "PINN_Prediction"
-    frame_dir = os.path.join('Assets', 'frames', 'pinn', case_name)
+    case_name = f"PINN_Prediction_{case_display}"
+    frame_dir = os.path.join('assets', 'frames', 'pinn', case_name)
     os.makedirs(frame_dir, exist_ok=True)
 
     print(f"Generazione frame dalla PINN in: {frame_dir}")
@@ -104,15 +116,20 @@ def main():
     )
     parser.add_argument(
         '--case', 
-        choices=['high', 'normal', 'low'], 
-        default='normal',
-        help="Caso di diffusività per la simulazione FEM."
+        choices=['high', 'normal', 'low', 'all'], 
+        default='all',
+        help="Caso di diffusività per la simulazione (FEM o PINN). Default 'all' esegue tutti i casi."
     )
     
     args = parser.parse_args()
 
     if args.action == 'fem':
-        if args.case == 'high':
+        if args.case == 'all':
+            print("Esecuzione di tutte le simulazioni FEM...")
+            run_fem_simulation('High_Diffusivity_10x', 10.0)
+            run_fem_simulation('Normal_Diffusivity_1x', 1.0)
+            run_fem_simulation('Low_Diffusivity_01x', 0.1)
+        elif args.case == 'high':
             run_fem_simulation('High_Diffusivity_10x', 10.0)
         elif args.case == 'normal':
             run_fem_simulation('Normal_Diffusivity_1x', 1.0)
@@ -123,7 +140,13 @@ def main():
         train_pinn_model()
         
     elif args.action == 'pinn-predict':
-        generate_pinn_frames()
+        if args.case == 'all':
+            print("Generazione di tutte le predizioni PINN...")
+            generate_pinn_frames('high')
+            generate_pinn_frames('normal')
+            generate_pinn_frames('low')
+        else:
+            generate_pinn_frames(args.case)
 
 if __name__ == "__main__":
     main()
