@@ -1,9 +1,11 @@
 # SciML - Monodomain Equation Solver
 
-This project implements two approaches to solve the monodomain equation for cardiac electrophysiology:
+This project implements multiple approaches to solve the monodomain equation for cardiac electrophysiology:
 
 1. A Finite Element Method (FEM) solver
 2. A Physics-Informed Neural Network (PINN) solver
+3. A Convolutional Neural Network (CNN) solver
+4. A DeepRitz solver (variational physics-informed neural networks)
 
 The system simulates the propagation of electrical signals in cardiac tissue with different diffusivity scenarios.
 
@@ -15,13 +17,19 @@ The system simulates the propagation of electrical signals in cardiac tissue wit
 │   │   ├── main.py     # Command-line interface
 │   │   ├── fem_solver.py   # FEM implementation
 │   │   ├── pinn_solver.py  # PINN implementation
+│   │   ├── cnn_solver.py   # CNN implementation
+│   │   ├── deepritz_solver.py # DeepRitz implementation
 │   │   └── plotting.py     # Visualization utilities
 │   └── matlab/         # MATLAB reference implementation
-├── models/             # PINN model storage
-│   └── pinn_model_*    # Each trained model with configs and history
+├── models/             # Model storage
+│   ├── pinn_model_*    # Each trained PINN model with configs and history
+│   ├── cnn_model_*     # Each trained CNN model with configs and history
+│   └── deepritz_model_* # Each trained DeepRitz model with configs and history
 ├── assets/             # Output videos and frames
 │   ├── fem/            # FEM simulation outputs
-│   └── pinn/           # PINN simulation outputs
+│   ├── pinn/           # PINN simulation outputs
+│   ├── cnn/            # CNN simulation outputs
+│   └── deepritz/       # DeepRitz simulation outputs
 ├── environment.yml     # Conda environment specification
 └── README.md           # This file
 ```
@@ -50,10 +58,21 @@ python -m src.python.main fem --case [high|normal|low|all]
 - `normal`: Normal diffusivity case
 - `low`: Low diffusivity case (0.1x normal)
 
-### Train a PINN Model
+### Train Neural Network Models
 
+#### PINN (Physics-Informed Neural Networks)
 ```bash
 python -m src.python.main pinn-train [--model-name NAME]
+```
+
+#### CNN (Convolutional Neural Networks) 
+```bash
+python -m src.python.main cnn-train [--model-name NAME]
+```
+
+#### DeepRitz (Variational PINNs)
+```bash
+python -m src.python.main deepritz-train [--model-name NAME]
 ```
 
 - `--model-name`: Optional name for the model directory (default: auto-generated timestamp)
@@ -61,12 +80,23 @@ python -m src.python.main pinn-train [--model-name NAME]
 Each training run creates a new directory in `models/` containing:
 - `model_weights.pth`: The trained model weights
 - `training_loss.png`: Plot of the loss curves during training
-- `pinn_solver_script.py`: Copy of the PINN script used for reproducibility
+- `*_solver_script.py`: Copy of the solver script used for reproducibility
 
-### Generate Predictions with PINN
+### Generate Predictions
 
+#### PINN Predictions
 ```bash
 python -m src.python.main pinn-predict --case [high|normal|low|all] [--model-name NAME]
+```
+
+#### CNN Predictions
+```bash
+python -m src.python.main cnn-predict --case [high|normal|low|all] [--model-name NAME]
+```
+
+#### DeepRitz Predictions
+```bash
+python -m src.python.main deepritz-predict --case [high|normal|low|all] [--model-name NAME]
 ```
 
 - `--case`: Diffusivity case to simulate
@@ -94,22 +124,38 @@ A typical workflow might look like:
    python -m src.python.main fem --case all
    ```
 
-2. Train a PINN model:
+2. Train models (choose one or more):
    ```
-   python -m src.python.main pinn-train --model-name my_first_model
+   # Train a PINN model
+   python -m src.python.main pinn-train --model-name my_pinn_model
+   
+   # Train a CNN model
+   python -m src.python.main cnn-train --model-name my_cnn_model
+   
+   # Train a DeepRitz model
+   python -m src.python.main deepritz-train --model-name my_deepritz_model
    ```
 
-3. Generate predictions with the trained model:
+3. Generate predictions with the trained models:
    ```
-   python -m src.python.main pinn-predict --case all --model-name my_first_model
+   python -m src.python.main pinn-predict --case all --model-name my_pinn_model
+   python -m src.python.main cnn-predict --case all --model-name my_cnn_model
+   python -m src.python.main deepritz-predict --case all --model-name my_deepritz_model
    ```
 
-4. Compare the results in `assets/fem/` and `assets/pinn/`
+4. Compare the results in `assets/fem/`, `assets/pinn/`, `assets/cnn/`, and `assets/deepritz/`
+
+## Methods Comparison
+
+- **FEM**: Traditional finite element method, provides reference solution
+- **PINN**: Physics-informed neural networks using strong form of the PDE
+- **CNN**: Deep learning approach with U-Net architecture for spatiotemporal prediction
+- **DeepRitz**: Variational physics-informed neural networks using weak form of the PDE (often more stable than traditional PINNs)
 
 ## Experiment Management
 
 The system automatically tracks experiments by:
-- Saving each PINN model with a timestamp or custom name
+- Saving each model with a timestamp or custom name
 - Storing model weights, loss plot, and the exact solver code version
 - Organizing outputs in a consistent directory structure
 
