@@ -1,3 +1,27 @@
+################## CUSTOM ##################
+############################################
+
+# Ignore PINN solver to allow personal customization
+src/python/pinn_solver.py
+
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# ignore .csv 
+*.csv
+
+# Ignore simulation frames
+**/frames/*.png
+
+
+################## OTHERS ##################
+############################################
+
 ## Core latex/pdflatex auxiliary files:
 *.aux
 *.lof
@@ -318,18 +342,3 @@ TSWLatexianTemp*
 # option is specified. Footnotes are the stored in a file with suffix Notes.bib.
 # Uncomment the next line to have this generated file ignored.
 #*Notes.bib
-
-
-# Python
-__pycache__/
-*.py[cod]
-
-# macOS
-.DS_Store
-*.DS_Store
-
-# ignore .csv 
-*.csv
-
-# Ignore simulation frames
-**/frames/*.png

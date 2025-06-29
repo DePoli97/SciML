@@ -1,9 +1,12 @@
 # src/main.py
 import argparse
 import os
+import time
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import inspect
+import os.path
 
 from .fem_solver import FEMSolver
 from .pinn_solver import PINNSolver, PINNTrainer
@@ -68,13 +71,38 @@ def run_fem_simulation(case_name, sigma_d_factor):
     # Crea il video dai frame
     create_video_from_frames(frame_dir, case_name)
 
-def train_pinn_model():
-    """Addestra il modello PINN e salva sia il modello che il grafico delle loss."""
-    models_dir = 'models'
-    model_path = os.path.join(models_dir, 'best_pinn_model.pth')
-    loss_plot_path = os.path.join(models_dir, 'training_loss.png')
-    os.makedirs(models_dir, exist_ok=True)
+def train_pinn_model(model_name=None):
+    """
+    Addestra il modello PINN e salva modello, grafico delle loss e script in una cartella dedicata.
     
+    Args:
+        model_name (str, optional): Nome del modello da usare. Se None, verrà generato automaticamente.
+    """
+    # Crea il nome del modello se non specificato
+    if model_name is None:
+        timestamp = time.strftime("%H%M%S")
+        model_name = f"pinn_model_{timestamp}"
+    
+    # Crea directory per il modello specifico
+    models_base_dir = 'models'
+    model_dir = os.path.join(models_base_dir, model_name)
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Definisci percorsi dei file
+    model_path = os.path.join(model_dir, 'model_weights.pth')
+    loss_plot_path = os.path.join(model_dir, 'training_loss.png')
+    script_copy_path = os.path.join(model_dir, 'pinn_solver_script.py')
+    
+    # Otteniamo il percorso del modulo corrente
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Costruiamo il percorso relativo al file pinn_solver.py
+    pinn_script_path = os.path.join(current_dir, 'pinn_solver.py')
+    
+    import shutil
+    shutil.copy2(pinn_script_path, script_copy_path)
+    print(f"Script PINN salvato in: {script_copy_path}")
+    
+    # Crea e addestra il modello
     pinn = PINNSolver(
         device=DEVICE,
         sigma_h=SIGMA_H,
@@ -119,12 +147,47 @@ def train_pinn_model():
     plt.savefig(loss_plot_path)
     print(f"Grafico delle loss salvato in: {loss_plot_path}")
     plt.close()
+    
+    # Salviamo solo i file essenziali: modello, grafico delle loss e script
+    print(f"Training completato con loss finale: {history['total_loss'][-1]:.4e}")
+    
+    return model_name
 
-def generate_pinn_frames(case='normal'):
-    """Carica un modello PINN addestrato e genera i frame/video."""
-    model_path = os.path.join('models', 'best_pinn_model.pth')
+def generate_pinn_frames(case='normal', model_name=None):
+    """
+    Carica un modello PINN addestrato e genera i frame/video.
+    
+    Args:
+        case (str): Caso di diffusività da simulare ('high', 'normal', 'low').
+        model_name (str, optional): Nome del modello da caricare. Se None, usa l'ultimo modello disponibile.
+    """
+    # Individua il percorso del modello da caricare
+    if model_name is None:
+        # Se non specificato, usa il modello predefinito o cerca l'ultimo
+        models_dir = 'models'
+        available_models = [d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d))]
+        if available_models:
+            # Ordina per timestamp (assumendo il formato nome_YYYYMMDD_HHMMSS)
+            available_models.sort(reverse=True)
+            model_name = available_models[0]
+            print(f"Modello non specificato. Uso il più recente: {model_name}")
+        else:
+            model_path = os.path.join(models_dir, 'best_pinn_model.pth')
+            if os.path.exists(model_path):
+                print("Usando il modello predefinito 'best_pinn_model.pth'")
+            else:
+                print(f"Errore: Nessun modello trovato. Esegui prima il training.")
+                return
+    
+    # Costruisci il percorso completo del modello
+    if model_name:
+        model_dir = os.path.join('models', model_name)
+        model_path = os.path.join(model_dir, 'model_weights.pth')
+    else:
+        model_path = os.path.join('models', 'best_pinn_model.pth')
+    
     if not os.path.exists(model_path):
-        print(f"Errore: Modello non trovato in {model_path}. Esegui prima il training.")
+        print(f"Errore: Modello non trovato in {model_path}. Esegui prima il training o verifica il nome del modello.")
         return
 
     # Calcoliamo sigma_h in base al caso
@@ -152,11 +215,17 @@ def generate_pinn_frames(case='normal'):
     model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
     model.eval()
 
-    # Configura le directory di output
+    # Organizza i risultati per modello e caso di diffusività
+    # Crea una directory principale per il modello
+    model_name_safe = model_name if model_name else "default_model"
+    output_dir = os.path.join('assets', 'pinn', model_name_safe)
+    
+    # Sotto-directory per il caso specifico di diffusività
     case_name = f"PINN_Prediction_{case_display}"
-    output_dir = os.path.join('assets', 'pinn')
     frames_dir = os.path.join(output_dir, case_name, 'frames')
     os.makedirs(frames_dir, exist_ok=True)
+    
+    print(f"Risultati saranno salvati in: {os.path.dirname(frames_dir)}")
 
     # Calcola la soluzione utilizzando il metodo compute_solution
     print(f"Calcolo della soluzione PINN per il caso: {case_name}")
@@ -188,6 +257,8 @@ def generate_pinn_frames(case='normal'):
     
     # Crea il video dai frame
     create_video_from_frames(frames_dir, case_name)
+            
+    return frames_dir
 
 # --- Interfaccia a Riga di Comando ---
 
@@ -203,6 +274,12 @@ def main():
         choices=['high', 'normal', 'low', 'all'], 
         default='all',
         help="Caso di diffusività per la simulazione (FEM o PINN). Default 'all' esegue tutti i casi."
+    )
+    parser.add_argument(
+        '--model-name',
+        type=str,
+        default=None,
+        help="Nome del modello da usare per il training o la predizione. Se non specificato, verrà usato un nome generato automaticamente per il training."
     )
     
     args = parser.parse_args()
@@ -221,16 +298,18 @@ def main():
             run_fem_simulation('Low_Diffusivity_01x', 0.1)
     
     elif args.action == 'pinn-train':
-        train_pinn_model()
+        trained_model = train_pinn_model(args.model_name)
+        print(f"\nModello salvato come '{trained_model}'. Per generare predizioni, esegui:")
+        print(f"python -m src.python.main pinn-predict --model-name {trained_model} --case [high|normal|low|all]")
         
     elif args.action == 'pinn-predict':
         if args.case == 'all':
             print("Generazione di tutte le predizioni PINN...")
-            generate_pinn_frames('high')
-            generate_pinn_frames('normal')
-            generate_pinn_frames('low')
+            generate_pinn_frames('high', args.model_name)
+            generate_pinn_frames('normal', args.model_name)
+            generate_pinn_frames('low', args.model_name)
         else:
-            generate_pinn_frames(args.case)
+            generate_pinn_frames(args.case, args.model_name)
 
 if __name__ == "__main__":
     main()

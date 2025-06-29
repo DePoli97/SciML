@@ -14,7 +14,7 @@ class CustomActivation(nn.Module):
         self.shift = nn.Parameter(torch.tensor(shift))
 
     def forward(self, x):
-        return 0.5 * (1.0 - torch.tanh(x))
+        return 0.5 * (1.0 - torch.tanh(self.sharpness * (x - self.shift)))
 
 class PINNSolver(nn.Module):
     """Risolve l'equazione del monodominio usando una PINN."""
