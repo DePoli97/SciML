@@ -391,7 +391,7 @@ class CNNTrainer:
         
         return inputs, targets, sigma_values
     
-    def train(self, train_loader, valid_loader=None, num_epochs=300, mse_weight=0.6, mae_weight=0.4, early_stop_patience=40):
+    def train(self, train_loader, valid_loader=None, num_epochs=300, mse_weight=0.6, mae_weight=0.4, early_stop_patience=100):
         """
         Addestra il modello CNN sui dati forniti con strategia di training avanzata.
         
@@ -535,7 +535,7 @@ class CNNTrainer:
                     
                     # Ripristina il miglior modello per l'output finale
                     if self.best_model_state is not None:
-                        self.model.load_state_dict(self.best_model_state, weights_only=True)
+                        self.model.load_state_dict(self.best_model_state)
                         print(f"Ripristinato il miglior modello (loss: {best_valid_loss:.6f})")
                     
                     break
