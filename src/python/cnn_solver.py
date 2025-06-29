@@ -65,7 +65,7 @@ class CNNSolver(nn.Module):
     Architettura migliorata con connessioni residuali, aumentata profondità, incrementato spazio latente,
     e regolarizzazione tramite dropout per prevenire l'overfitting.
     """
-    def __init__(self, device=None, prediction_steps=1, latent_dim=128, nvx=101, nvy=101, dropout_rate=0.2):
+    def __init__(self, device=None, prediction_steps=1, latent_dim=128, nvx=101, nvy=101, dropout_rate=0.4):
         super(CNNSolver, self).__init__()
         
         self.device = device if device is not None else torch.device('cpu')
@@ -307,7 +307,7 @@ class CNNTrainer:
     - Supporto per early stopping
     - Aumento/diminuzione progressivo del learning rate (warmup/cooldown)
     """
-    def __init__(self, model, learning_rate=5e-4, device=None, weight_decay=2e-5):
+    def __init__(self, model, learning_rate=5e-4, device=None, weight_decay=1e-4):
         self.device = device if device is not None else torch.device('cpu')
         self.model = model.to(self.device)
         
@@ -315,7 +315,7 @@ class CNNTrainer:
         self.optimizer = optim.AdamW(
             self.model.parameters(), 
             lr=learning_rate,
-            weight_decay=weight_decay,  # Regolarizzazione L2 migliorata
+            weight_decay=weight_decay,  # Regolarizzazione L2 aumentata per controllo overfitting
             betas=(0.9, 0.999),  # Valori ottimizzati per convergenza stabile
             eps=1e-8
         )
@@ -383,12 +383,69 @@ class CNNTrainer:
                 input_state = solutions[idx]
                 target_states = [solutions[idx + i + 1] for i in range(self.model.prediction_steps)]
                 
-                # Aggiungi ai dataset
+                # Aggiungi l'esempio originale al dataset
                 inputs.append(torch.tensor(input_state, dtype=torch.float32).view(1, nvx, nvy))
                 targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
                 sigma_values.append(sigma)
+                
+                # Data Augmentation 1: Aggiungi rumore gaussiano all'input (aumenta la robustezza)
+                if np.random.rand() < 0.5:  # 50% di probabilità
+                    noise_level = np.random.uniform(0.001, 0.01)
+                    noisy_input = input_state + np.random.normal(0, noise_level, input_state.shape)
+                    # Mantieni i valori nell'intervallo [0, 1]
+                    noisy_input = np.clip(noisy_input, 0, 1)
+                    inputs.append(torch.tensor(noisy_input, dtype=torch.float32).view(1, nvx, nvy))
+                    targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                    sigma_values.append(sigma)
+                
+                # Data Augmentation 2: Leggero jitter nei valori di sigma (aumenta la generalizzazione)
+                if np.random.rand() < 0.5:  # 50% di probabilità
+                    jitter_factor = np.random.uniform(0.9, 1.1)
+                    jittered_sigma = sigma * jitter_factor
+                    inputs.append(torch.tensor(input_state, dtype=torch.float32).view(1, nvx, nvy))
+                    targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                    sigma_values.append(jittered_sigma)
         
         return inputs, targets, sigma_values
+    
+    def _apply_mixup(self, inputs, targets_list, sigmas, alpha=0.2):
+        """
+        Applica la tecnica mixup per ridurre l'overfitting. Mixup combina coppie di esempi e target
+        in modo lineare per creare nuovi esempi di training che incoraggiano comportamenti lineari
+        tra esempi di training, migliorando la robustezza del modello.
+        
+        Args:
+            inputs: Tensore di input [batch, channels, height, width]
+            targets_list: Lista di tensori target
+            sigmas: Valori di sigma
+            alpha: Parametro di mixup per il campionamento Beta
+            
+        Returns:
+            mixed_inputs: Input mixati
+            mixed_targets_list: Target mixati
+            mixed_sigmas: Sigma mixati
+        """
+        if alpha > 0:
+            lam = np.random.beta(alpha, alpha)
+        else:
+            lam = 1
+            
+        batch_size = inputs.size(0)
+        index = torch.randperm(batch_size).to(self.device)
+        
+        # Mix inputs
+        mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
+        
+        # Mix sigma values
+        mixed_sigmas = lam * sigmas + (1 - lam) * sigmas[index]
+        
+        # Mix targets (per ciascun timestep)
+        mixed_targets_list = []
+        for targets in targets_list:
+            mixed_targets = lam * targets + (1 - lam) * targets[index, :]
+            mixed_targets_list.append(mixed_targets)
+            
+        return mixed_inputs, mixed_targets_list, mixed_sigmas
     
     def train(self, train_loader, valid_loader=None, num_epochs=300, mse_weight=0.6, mae_weight=0.4, early_stop_patience=100):
         """
@@ -441,6 +498,17 @@ class CNNTrainer:
                 inputs = inputs.to(self.device)
                 sigmas = sigmas.to(self.device)
                 
+                # Converti la lista di tensori target in lista di tensori su device
+                targets_device = []
+                for t in targets_list:
+                    targets_device.append(t.to(self.device))
+                
+                # Applica mixup con probabilità 0.3 dopo le prime 50 epoche per evitare
+                # di interferire con l'apprendimento iniziale del modello
+                use_mixup = epoch >= 50 and np.random.rand() < 0.3 and inputs.size(0) > 1
+                if use_mixup:
+                    inputs, targets_device, sigmas = self._apply_mixup(inputs, targets_device, sigmas, alpha=0.2)
+                
                 # Forward pass
                 predictions = self.model(inputs, sigmas)
                 
@@ -449,17 +517,26 @@ class CNNTrainer:
                 predictions_count = 0
                 
                 for i, pred in enumerate(predictions):
-                    if i < len(targets_list):
+                    if i < len(targets_device):
                         # Prendi il target corrispondente al passo temporale i
-                        target = targets_list[i].to(self.device)
+                        target = targets_device[i]
                         
                         # Gestione batch size mismatch
                         if target.shape[0] != pred.shape[0]:
                             target = target[:pred.shape[0]]
                         
+                        # Label smoothing: aggiunge un leggero rumore ai target per ridurre l'overfitting
+                        # Basato sul concetto che predizioni troppo "sicure" possono portare a overfitting
+                        if epoch > warmup_epochs:
+                            # Applica label smoothing solo dopo il warmup
+                            eps = 0.05  # Valore di smoothing
+                            smooth_target = target * (1 - eps) + eps/2  # Shifta leggermente dal target perfetto
+                        else:
+                            smooth_target = target
+                            
                         # Loss ibrida MSE + MAE
-                        mse_loss = self.criterion(pred, target)
-                        mae_loss = self.mae_criterion(pred, target)
+                        mse_loss = self.criterion(pred, smooth_target)
+                        mae_loss = self.mae_criterion(pred, smooth_target)
                         
                         # Schema di ponderazione temporale migliorato
                         # Dà più peso alle previsioni a breve termine (cruciali per la stabilità)

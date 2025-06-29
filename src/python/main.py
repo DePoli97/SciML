@@ -303,7 +303,7 @@ def train_cnn_model(model_name=None):
         device=DEVICE,
         prediction_steps=5,  # Predizione multistep
         latent_dim=128,      # Dimensione spazio latente aumentata
-        dropout_rate=0.2     # Dropout per regolarizzazione
+        dropout_rate=0.4     # Dropout più forte per regolarizzazione
     ).to(DEVICE)
     
     # Crea il trainer con iperparametri ottimizzati
@@ -311,7 +311,7 @@ def train_cnn_model(model_name=None):
         cnn_model,
         learning_rate=5e-4,  # Learning rate iniziale aumentato
         device=DEVICE,
-        weight_decay=2e-5    # Regolarizzazione L2 ottimizzata
+        weight_decay=1e-4    # Regolarizzazione L2 più aggressiva
     )
     
     # Genera dati di training con FEM solver per diversi valori di diffusività
@@ -370,7 +370,7 @@ def train_cnn_model(model_name=None):
     history = trainer.train(
         train_loader,
         val_loader,
-        num_epochs=10,             # Triplicato il numero di epoche
+        num_epochs=1000,             # Triplicato il numero di epoche
         mse_weight=0.6,             # Peso della MSE loss
         mae_weight=0.4,             # Peso della MAE loss
         early_stop_patience=100      # Patience aumentata per consentire plateau nel training
@@ -462,7 +462,7 @@ def generate_cnn_frames(case='normal', model_name=None):
     ).to(DEVICE)
     
     # Carica i pesi pre-addestrati
-    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
     model.eval()
     
     # Organizza i risultati per modello e caso di diffusività
@@ -619,7 +619,7 @@ def solve(solver_type, case="Normal_Diffusivity_1x", model_name=None, n_epochs=2
             
             # Carica i pesi pre-addestrati
             model_path = os.path.join(model_dir, 'model_weights.pth')
-            cnn_model.load_state_dict(torch.load(model_path, map_location=device))
+            cnn_model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
             cnn_model.eval()
             
             # Esegui la predizione
@@ -768,7 +768,7 @@ def solve(solver_type, case="Normal_Diffusivity_1x", model_name=None, n_epochs=2
         
         # Ricrea il modello CNN
         cnn_model = CNNSolver(device=DEVICE).to(DEVICE)
-        cnn_model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        cnn_model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
         cnn_model.eval()
         
         # Calcola la soluzione utilizzando il metodo compute_solution
@@ -833,7 +833,7 @@ def load_model(model, model_dir):
     Carica i pesi del modello.
     """
     model_path = os.path.join(model_dir, 'model_weights.pth')
-    model.load_state_dict(torch.load(model_path, map_location=model.device))
+    model.load_state_dict(torch.load(model_path, map_location=model.device, weights_only=True))
     model.eval()
     print(f"Modello caricato da: {model_path}")
 

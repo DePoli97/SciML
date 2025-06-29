@@ -1,0 +1,12 @@
+name: sciml-env
+channels:
+  - conda-forge
+dependencies:
+  - ffmpeg
+  - matplotlib
+  - numpy
+  - python=3.9
+  - pytorch
+  - scipy
+  - tqdm
+prefix: /Users/paolodeidda/miniforge3/envs/sciml-env
