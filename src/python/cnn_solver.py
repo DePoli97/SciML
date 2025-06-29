@@ -425,6 +425,10 @@ class CNNTrainer:
             mixed_targets_list: Target mixati
             mixed_sigmas: Sigma mixati
         """
+        # Caso di batch singolo: non applicare mixup
+        if inputs.size(0) <= 1:
+            return inputs, targets_list, sigmas
+            
         if alpha > 0:
             lam = np.random.beta(alpha, alpha)
         else:
@@ -441,8 +445,27 @@ class CNNTrainer:
         
         # Mix targets (per ciascun timestep)
         mixed_targets_list = []
+        
         for targets in targets_list:
-            mixed_targets = lam * targets + (1 - lam) * targets[index, :]
+            # Garantiamo che targets abbia la stessa dimensione del batch di inputs
+            if targets.size(0) != batch_size:
+                # Se il batch target è più grande, troncalo
+                if targets.size(0) > batch_size:
+                    targets = targets[:batch_size]
+                # Se il batch target è più piccolo, non possiamo applicare il mixup in modo sicuro
+                else:
+                    # Ripeti l'ultimo elemento per arrivare alla stessa dimensione
+                    pad_size = batch_size - targets.size(0)
+                    padding = targets[-1:].repeat(pad_size, 1, 1, 1)
+                    targets = torch.cat([targets, padding], dim=0)
+                
+            # Verifichiamo che l'indice di permutazione sia compatibile
+            permuted_index = index
+            if permuted_index.size(0) > targets.size(0):
+                permuted_index = permuted_index[:targets.size(0)]
+                
+            # Applichiamo il mixup
+            mixed_targets = lam * targets + (1 - lam) * targets[permuted_index, :]
             mixed_targets_list.append(mixed_targets)
             
         return mixed_inputs, mixed_targets_list, mixed_sigmas
@@ -521,9 +544,17 @@ class CNNTrainer:
                         # Prendi il target corrispondente al passo temporale i
                         target = targets_device[i]
                         
-                        # Gestione batch size mismatch
+                        # Gestione più robusta del batch size mismatch
                         if target.shape[0] != pred.shape[0]:
-                            target = target[:pred.shape[0]]
+                            # Se il target è più grande del pred, troncalo
+                            if target.shape[0] > pred.shape[0]:
+                                target = target[:pred.shape[0]]
+                            # Se il target è più piccolo del pred, dobbiamo adattare pred
+                            else:
+                                pred = pred[:target.shape[0]]
+                        
+                        # Controllo di sicurezza che i tensor abbiano la stessa dimensione
+                        assert target.shape == pred.shape, f"Shape mismatch: target {target.shape}, pred {pred.shape}"
                         
                         # Label smoothing: aggiunge un leggero rumore ai target per ridurre l'overfitting
                         # Basato sul concetto che predizioni troppo "sicure" possono portare a overfitting

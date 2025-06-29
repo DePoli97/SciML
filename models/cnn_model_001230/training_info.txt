@@ -1,0 +1,6 @@
+Modello: cnn_model_001230
+Latent dimension: 128
+Prediction steps: 5
+Epoche di training: 101
+Best validation loss: 0.248962
+Final training loss: 0.183454
