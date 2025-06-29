@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import os
 import time
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
 
 class UNetBlock(nn.Module):
     """Blocco base per l'architettura U-Net."""
@@ -435,10 +434,10 @@ class CNNTrainer:
             train_loss = 0.0
             num_batches = 0
             
-            # Progress bar con tqdm
-            progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+            # Print epoch information
+            print(f"Epoch {epoch+1}/{num_epochs}")
             
-            for inputs, targets_list, sigmas in progress_bar:
+            for inputs, targets_list, sigmas in train_loader:
                 inputs = inputs.to(self.device)
                 sigmas = sigmas.to(self.device)
                 
@@ -485,9 +484,6 @@ class CNNTrainer:
                 
                 train_loss += batch_loss.item()
                 num_batches += 1
-                
-                # Aggiorna la barra di progresso con la loss corrente
-                progress_bar.set_postfix(loss=f"{batch_loss.item():.6f}")
             
             # Applicazione alternata degli scheduler
             if epoch % 5 == 0:  # Cosine annealing ogni 5 epoche
@@ -670,4 +666,5 @@ class CNNTrainer:
             plt.savefig(output_path, dpi=300, bbox_inches='tight')
             print(f"Grafico dettagliato delle loss salvato in: {output_path}")
         
-        plt.show()
+        # Close the figure to release memory
+        plt.close(fig)

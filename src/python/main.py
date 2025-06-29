@@ -370,10 +370,10 @@ def train_cnn_model(model_name=None):
     history = trainer.train(
         train_loader,
         val_loader,
-        num_epochs=1000,             # Triplicato il numero di epoche
+        num_epochs=10,             # Triplicato il numero di epoche
         mse_weight=0.6,             # Peso della MSE loss
         mae_weight=0.4,             # Peso della MAE loss
-        early_stop_patience=1000      # Patience aumentata per consentire plateau nel training
+        early_stop_patience=100      # Patience aumentata per consentire plateau nel training
     )
     
     # Salva il modello addestrato
