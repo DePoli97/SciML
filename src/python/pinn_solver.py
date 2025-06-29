@@ -10,15 +10,13 @@ import time
 class CustomActivation(nn.Module):
     def __init__(self):
         super(CustomActivation, self).__init__()
-        self.A = nn.Parameter(torch.tensor(0.5))
-        self.B = nn.Parameter(torch.tensor(-2.0))
-    
+
     def forward(self, x):
-        return self.A * (1 - torch.tanh(self.B * x))
+        return 0.5 * (1.0 - torch.tanh(x))
 
 class PINNSolver(nn.Module):
     """Risolve l'equazione del monodominio usando una PINN."""
-    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 64, 64, 64, 1]):
+    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 80, 80, 80, 80, 1]):
         super(PINNSolver, self).__init__()
         
         self.device = device if device is not None else torch.device('cpu')
