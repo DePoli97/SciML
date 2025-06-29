@@ -11,7 +11,7 @@ class CustomActivation(nn.Module):
     def __init__(self):
         super(CustomActivation, self).__init__()
         self.A = nn.Parameter(torch.tensor(0.5))
-        self.B = nn.Parameter(torch.tensor(-5.0))
+        self.B = nn.Parameter(torch.tensor(-2.0))
     
     def forward(self, x):
         return self.A * (1 - torch.tanh(self.B * x))
@@ -124,11 +124,37 @@ class PINNTrainer:
         self.model = model.to(self.device)
         self.T = T
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', patience=500, factor=0.5)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 'min', patience=500, factor=0.5, min_lr=1e-7
+        )
 
     def train(self, n_epochs, n_points_pde, n_points_ic):
         print("Avvio training della PINN...")
         start_time = time.time()
+        
+        # Liste per memorizzare l'andamento delle loss
+        history = {
+            'epochs': [],
+            'total_loss': [],
+            'pde_loss': [],
+            'ic_loss': [],
+            'learning_rate': []
+        }
+
+        # Warm-up iniziale focalizzato sulla IC
+        print("Warm-up sulla condizione iniziale...")
+        for warmup_epoch in range(500):
+            self.optimizer.zero_grad()
+            x_ic = torch.rand(n_points_ic, 1, device=self.device)
+            y_ic = torch.rand(n_points_ic, 1, device=self.device)
+            t_ic = torch.zeros(n_points_ic, 1, device=self.device)
+            u_ic_pred = self.model(x_ic, y_ic, t_ic)
+            u_ic_true = torch.zeros_like(u_ic_pred)
+            u_ic_true[(x_ic >= 0.9) & (y_ic >= 0.9)] = 1.0
+            loss_ic = torch.mean((u_ic_pred - u_ic_true)**2)
+            loss_ic.backward()
+            self.optimizer.step()
+        print("Fine warm-up.")
 
         for epoch in range(n_epochs):
             self.optimizer.zero_grad()
@@ -150,16 +176,26 @@ class PINNTrainer:
             loss_ic = torch.mean((u_ic_pred - u_ic_true)**2)
             
             # Loss totale
-            total_loss = loss_pde + 100 * loss_ic # Peso maggiore per la IC
+            total_loss = loss_pde + 20 * loss_ic  # Ridotto ulteriormente il peso della IC
             
             total_loss.backward()
             self.optimizer.step()
             self.scheduler.step(total_loss)
             
+            # Salva i valori delle loss ogni 100 epoche
             if (epoch + 1) % 100 == 0:
+                lr = self.optimizer.param_groups[0]['lr']
+                history['epochs'].append(epoch + 1)
+                history['total_loss'].append(total_loss.item())
+                history['pde_loss'].append(loss_pde.item())
+                history['ic_loss'].append(loss_ic.item())
+                history['learning_rate'].append(lr)
+                
                 print(f"Epoch {epoch+1}/{n_epochs}, Loss: {total_loss.item():.4e}, "
                       f"Loss PDE: {loss_pde.item():.4e}, Loss IC: {loss_ic.item():.4e}, "
-                      f"LR: {self.optimizer.param_groups[0]['lr']:.4e}")
+                      f"LR: {lr:.4e}")
 
         end_time = time.time()
         print(f"Training completato in {end_time - start_time:.2f} secondi.")
+        
+        return history

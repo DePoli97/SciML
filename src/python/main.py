@@ -69,9 +69,11 @@ def run_fem_simulation(case_name, sigma_d_factor):
     create_video_from_frames(frame_dir, case_name)
 
 def train_pinn_model():
-    """Addestra il modello PINN e lo salva."""
-    model_path = os.path.join('models', 'best_pinn_model.pth')
-    os.makedirs('models', exist_ok=True)
+    """Addestra il modello PINN e salva sia il modello che il grafico delle loss."""
+    models_dir = 'models'
+    model_path = os.path.join(models_dir, 'best_pinn_model.pth')
+    loss_plot_path = os.path.join(models_dir, 'training_loss.png')
+    os.makedirs(models_dir, exist_ok=True)
     
     pinn = PINNSolver(
         device=DEVICE,
@@ -84,10 +86,39 @@ def train_pinn_model():
     
     trainer = PINNTrainer(pinn, device=DEVICE, T=T)
     
-    trainer.train(n_epochs=10000, n_points_pde=4096, n_points_ic=1024)
+    # Otteniamo l'history del training
+    history = trainer.train(n_epochs=10000, n_points_pde=4096, n_points_ic=1024)
     
+    # Salva il modello addestrato
     torch.save(pinn.state_dict(), model_path)
     print(f"Modello PINN salvato in: {model_path}")
+    
+    # Crea e salva il grafico delle loss
+    plt.figure(figsize=(12, 8))
+    
+    # Subplot per le loss
+    plt.subplot(2, 1, 1)
+    plt.semilogy(history['epochs'], history['total_loss'], 'b-', label='Loss Totale')
+    plt.semilogy(history['epochs'], history['pde_loss'], 'r--', label='Loss PDE')
+    plt.semilogy(history['epochs'], history['ic_loss'], 'g-.', label='Loss IC')
+    plt.grid(True, which="both", ls="--")
+    plt.xlabel('Epoche')
+    plt.ylabel('Loss (scala log)')
+    plt.legend()
+    plt.title('Andamento delle Loss Durante il Training')
+    
+    # Subplot per il learning rate
+    plt.subplot(2, 1, 2)
+    plt.semilogy(history['epochs'], history['learning_rate'], 'k-')
+    plt.grid(True, which="both", ls="--")
+    plt.xlabel('Epoche')
+    plt.ylabel('Learning Rate (scala log)')
+    plt.title('Andamento del Learning Rate')
+    
+    plt.tight_layout()
+    plt.savefig(loss_plot_path)
+    print(f"Grafico delle loss salvato in: {loss_plot_path}")
+    plt.close()
 
 def generate_pinn_frames(case='normal'):
     """Carica un modello PINN addestrato e genera i frame/video."""
