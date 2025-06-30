@@ -5,7 +5,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import time
+import math
+import random
+import tqdm
+from torch.optim.swa_utils import AveragedModel, SWALR  # Importiamo SWA
 from torch.utils.data import DataLoader, TensorDataset
+from torch.nn import functional as F
 
 class UNetBlock(nn.Module):
     """Blocco base per l'architettura U-Net."""
@@ -25,34 +30,98 @@ class UNetBlock(nn.Module):
         x = self.dropout(x)
         return x
 
+class StdConv2d(nn.Conv2d):
+    """Convolution con Weight Standardization per una migliore generalizzazione"""
+    def __init__(self, in_channels, out_channels, kernel_size, padding=0, stride=1, bias=True):
+        super(StdConv2d, self).__init__(
+            in_channels, out_channels, kernel_size, stride=stride, 
+            padding=padding, bias=bias
+        )
+        
+    def forward(self, x):
+        # Weight standardization
+        weight = self.weight
+        weight_mean = weight.mean(dim=[1, 2, 3], keepdim=True)
+        weight = weight - weight_mean
+        std = weight.std(dim=[1, 2, 3], keepdim=True) + 1e-5
+        weight = weight / std
+        return F.conv2d(x, weight, self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+class WeightStandardizedConv2d(nn.Conv2d):
+    """Implementazione alternativa di Weight Standardization più efficiente"""
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, dilation=1, groups=1, bias=True):
+        super(WeightStandardizedConv2d, self).__init__(
+            in_channels, out_channels, kernel_size, stride,
+            padding, dilation, groups, bias)
+
+    def forward(self, x):
+        weight = self.weight
+        weight_mean = weight.mean(dim=[1, 2, 3], keepdim=True)
+        weight = weight - weight_mean
+        std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
+        weight = weight / std
+        return F.conv2d(x, weight, self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+class SpectralConv2d(nn.Module):
+    """Convolution 2D con regolarizzazione spettrale per controllo della Lipschitzianità."""
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, stride=1):
+        super(SpectralConv2d, self).__init__()
+        self.conv = nn.utils.spectral_norm(
+            WeightStandardizedConv2d(in_channels, out_channels, kernel_size=kernel_size, 
+                      padding=padding, stride=stride)
+        )
+    
+    def forward(self, x):
+        return self.conv(x)
+
+class StochasticDepth(nn.Module):
+    """Implementazione di Stochastic Depth: salta alcuni layer casualmente durante il training."""
+    def __init__(self, drop_prob=0.3):  # Aumentiamo la drop probability a 0.3
+        super(StochasticDepth, self).__init__()
+        self.drop_prob = drop_prob
+        self.keep_prob = 1 - drop_prob
+        
+    def forward(self, x):
+        if not self.training or self.drop_prob == 0:
+            return x
+        
+        binary_tensor = torch.rand(x.shape[0], 1, 1, 1, device=x.device) < self.keep_prob
+        return x * binary_tensor / self.keep_prob
+
 class ResUNetBlock(nn.Module):
     """Blocco avanzato con connessione residuale per l'architettura U-Net."""
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, dropout_rate=0.1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, dropout_rate=0.1, groups=8):
         super(ResUNetBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, padding=padding)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, padding=padding)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        # Usa SpectralConv2d per regolarizzazione spettrale
+        self.conv1 = SpectralConv2d(in_channels, out_channels, kernel_size, padding=padding)
+        # GroupNorm invece di BatchNorm per stabilità indipendente dalla batch size
+        self.gn1 = nn.GroupNorm(min(groups, out_channels), out_channels)
+        self.conv2 = SpectralConv2d(out_channels, out_channels, kernel_size, padding=padding)
+        self.gn2 = nn.GroupNorm(min(groups, out_channels), out_channels)
+        self.relu = nn.LeakyReLU(0.2, inplace=True)  # LeakyReLU per prevenire dying ReLU
         self.dropout = nn.Dropout2d(p=dropout_rate)
+        self.stochastic_depth = StochasticDepth(drop_prob=0.2)  # 20% di probabilità di saltare il blocco
         
         # Connessione residuale (skip connection)
         self.skip = nn.Sequential()
         if in_channels != out_channels:
             self.skip = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels)
+                WeightStandardizedConv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                nn.GroupNorm(min(groups, out_channels), out_channels)
             )
     
     def forward(self, x):
         residual = self.skip(x)
         
-        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.gn1(self.conv1(x)))
         x = self.dropout(x)
-        x = self.bn2(self.conv2(x))
+        x = self.gn2(self.conv2(x))
         
-        # Somma con la connessione residuale
-        x += residual
+        # Somma con la connessione residuale attraverso stochastic depth
+        x = self.stochastic_depth(x) + residual
         x = self.relu(x)
         
         return x
@@ -64,8 +133,10 @@ class CNNSolver(nn.Module):
     
     Architettura migliorata con connessioni residuali, aumentata profondità, incrementato spazio latente,
     e regolarizzazione tramite dropout per prevenire l'overfitting.
+    Include ora anche regolarizzazione spettrale, stochastic depth, GroupNorm e weight standardization
+    per combattere l'overfitting e migliorare la generalizzazione.
     """
-    def __init__(self, device=None, prediction_steps=1, latent_dim=128, nvx=101, nvy=101, dropout_rate=0.4):
+    def __init__(self, device=None, prediction_steps=1, latent_dim=128, nvx=101, nvy=101, dropout_rate=0.5):
         super(CNNSolver, self).__init__()
         
         self.device = device if device is not None else torch.device('cpu')
@@ -77,9 +148,9 @@ class CNNSolver(nn.Module):
         # Encoder molto più profondo con più livelli di estrazione caratteristiche
         self.encoder = nn.Sequential(
             # Primo livello - estrazione caratteristiche iniziali
-            nn.Conv2d(1, 16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
+            WeightStandardizedConv2d(1, 16, kernel_size=3, padding=1),
+            nn.GroupNorm(4, 16),
+            nn.LeakyReLU(0.1, inplace=True),
             ResUNetBlock(16, 32, dropout_rate=dropout_rate),
             nn.MaxPool2d(2),  # Riduzione dimensionalità 2x
             
@@ -95,6 +166,7 @@ class CNNSolver(nn.Module):
             
             # Quarto livello - ulteriore compressione
             ResUNetBlock(128, 256, dropout_rate=dropout_rate),
+            nn.Dropout2d(0.25),  # Aggiunto dropout addizionale tra livelli
             nn.MaxPool2d(2),  # Riduzione dimensionalità 16x
             
             # Bottleneck con attenzione alla preservazione dell'informazione
@@ -116,6 +188,7 @@ class CNNSolver(nn.Module):
             # Secondo livello di upsampling - bassa risoluzione
             ResUNetBlock(128, 64, dropout_rate=dropout_rate),
             ResUNetBlock(64, 64, dropout_rate=dropout_rate),
+            nn.Dropout2d(0.2),  # Aggiunto dropout addizionale
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             
             # Terzo livello di upsampling - media risoluzione
@@ -127,29 +200,30 @@ class CNNSolver(nn.Module):
             
             # Adatta le dimensioni esattamente all'output desiderato
             nn.Upsample(size=(nvx, nvy), mode='bilinear', align_corners=True),
-            
-            # Proiezione finale a 1 canale con attenzione alla stabilità numerica
-            nn.Conv2d(16, 8, kernel_size=3, padding=1),
-            nn.BatchNorm2d(8),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(8, 1, kernel_size=1),
-            nn.Sigmoid()  # Limita l'output tra 0 e 1 per stabilità
+            WeightStandardizedConv2d(16, 8, kernel_size=3, padding=1),
+            nn.GroupNorm(2, 8),
+            nn.LeakyReLU(0.1, inplace=True),
+            WeightStandardizedConv2d(8, 1, kernel_size=1),
+            nn.Sigmoid()  # Garantisce output in [0,1]
         )
         
-        # Proiezione dei parametri fisici nello spazio latente (architettura più complessa)
+        # Proiezione dei parametri fisici nello spazio latente con architettura più complessa
+        # e ulteriormente regolarizzata per ridurre l'overfitting
         self.params_projection = nn.Sequential(
             nn.Linear(4, 64),
             nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(dropout_rate + 0.1),  # Dropout aumentato
             nn.Linear(64, 128),
             nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(dropout_rate + 0.1),  # Dropout aumentato
             nn.Linear(128, 256),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(256, latent_dim)
+            nn.LayerNorm(256),  # Aggiunta normalizzazione
+            nn.LeakyReLU(0.1),
+            nn.Dropout(dropout_rate + 0.05),
+            nn.Linear(256, latent_dim),
+            nn.LayerNorm(latent_dim)  # Normalizzazione finale
         )
         
         # Modulo di previsione temporale molto più profondo con molti blocchi residuali
@@ -307,31 +381,51 @@ class CNNTrainer:
     - Supporto per early stopping
     - Aumento/diminuzione progressivo del learning rate (warmup/cooldown)
     """
-    def __init__(self, model, learning_rate=5e-4, device=None, weight_decay=1e-4):
+    def __init__(self, model, learning_rate=5e-4, device=None, weight_decay=1e-3):
         self.device = device if device is not None else torch.device('cpu')
         self.model = model.to(self.device)
         
-        # Ottimizzatore AdamW più aggressivo con weight decay ottimizzato
-        self.optimizer = optim.AdamW(
-            self.model.parameters(), 
+        # Configurazione base dell'ottimizzatore per SAM
+        base_optimizer = lambda params, **kwargs: optim.AdamW(
+            params,
             lr=learning_rate,
-            weight_decay=weight_decay,  # Regolarizzazione L2 aumentata per controllo overfitting
-            betas=(0.9, 0.999),  # Valori ottimizzati per convergenza stabile
+            weight_decay=weight_decay,  # Peso della regolarizzazione L2 ulteriormente aumentato
+            betas=(0.9, 0.999), 
             eps=1e-8
         )
         
-        # Funzioni di loss combinate per migliore stabilità e convergenza
-        self.criterion = nn.MSELoss()  # Sensibilità ai grandi errori
-        self.mae_criterion = nn.L1Loss()  # Sensibilità agli errori piccoli
-        
-        # Learning rate scheduler principale - riduce il LR quando la loss si stabilizza
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 'min', patience=15, factor=0.5, min_lr=1e-7, verbose=True
+        # Sharpness-Aware Minimization per trovare minimi più piatti della loss
+        self.optimizer = SAM(
+            self.model.parameters(),
+            base_optimizer,
+            rho=0.05,  # Parametro di perturbazione
+            adaptive=True  # Perturbazione adattiva per parametro
         )
         
-        # Scheduler secondario - introduce oscillazioni nel LR per uscire da minimi locali
+        # Stochastic Weight Averaging per migliorare la generalizzazione
+        self.swa_model = AveragedModel(model)
+        self.swa_scheduler = SWALR(
+            self.optimizer.base_optimizer,  # Nota: ora usiamo base_optimizer dentro SAM
+            swa_lr=learning_rate * 0.5,
+            anneal_epochs=5,
+            anneal_strategy='cos'
+        )
+        self.swa_start = 100  # Inizia SWA dopo 100 epoche
+        
+        # Loss functions più avanzate con focus su diverse caratteristiche dell'errore
+        self.criterion = nn.MSELoss()  # Errori grandi
+        self.mae_criterion = nn.L1Loss()  # Robustezza agli outlier
+        
+        # Learning rate scheduler - riduce il LR quando la loss si stabilizza
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer.base_optimizer,  # Nota: ora usiamo base_optimizer dentro SAM
+            'min', patience=20, factor=0.5, min_lr=5e-8, verbose=True
+        )
+        
+        # Scheduler secondario per oscillazioni LR
         self.cosine_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer, T_0=30, T_mult=2, eta_min=1e-7
+            self.optimizer.base_optimizer,  # Nota: ora usiamo base_optimizer dentro SAM
+            T_0=20, T_mult=2, eta_min=1e-7
         )
         
         # Tracciamento del best model per early stopping
@@ -340,7 +434,7 @@ class CNNTrainer:
     
     def generate_training_data_from_fem(self, fem_solver, sigmas, T, dt, num_samples=100, seed=42):
         """
-        Genera dati di training dal solver FEM.
+        Genera dati di training dal solver FEM con opzionale data augmentation.
         
         Args:
             fem_solver: Istanza di FEMSolver
@@ -356,6 +450,7 @@ class CNNTrainer:
         """
         np.random.seed(seed)
         torch.manual_seed(seed)
+        random.seed(seed)
         
         nvx, nvy = fem_solver.nvx, fem_solver.nvy
         inputs = []
@@ -389,8 +484,8 @@ class CNNTrainer:
                 sigma_values.append(sigma)
                 
                 # Data Augmentation 1: Aggiungi rumore gaussiano all'input (aumenta la robustezza)
-                if np.random.rand() < 0.5:  # 50% di probabilità
-                    noise_level = np.random.uniform(0.001, 0.01)
+                if np.random.rand() < 0.7:  # 70% di probabilità
+                    noise_level = np.random.uniform(0.001, 0.015)  # Rumore maggiore
                     noisy_input = input_state + np.random.normal(0, noise_level, input_state.shape)
                     # Mantieni i valori nell'intervallo [0, 1]
                     noisy_input = np.clip(noisy_input, 0, 1)
@@ -398,21 +493,30 @@ class CNNTrainer:
                     targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
                     sigma_values.append(sigma)
                 
-                # Data Augmentation 2: Leggero jitter nei valori di sigma (aumenta la generalizzazione)
-                if np.random.rand() < 0.5:  # 50% di probabilità
-                    jitter_factor = np.random.uniform(0.9, 1.1)
+                # Data Augmentation 2: Jitter più aggressivo nei valori di sigma
+                if np.random.rand() < 0.7:  # 70% di probabilità
+                    jitter_factor = np.random.uniform(0.8, 1.2)  # Range più ampio
                     jittered_sigma = sigma * jitter_factor
                     inputs.append(torch.tensor(input_state, dtype=torch.float32).view(1, nvx, nvy))
                     targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
                     sigma_values.append(jittered_sigma)
+                    
+                # Data Augmentation 3: Cutout - applica maschere casuali all'input
+                if np.random.rand() < 0.5:  # 50% di probabilità
+                    mask_size = np.random.randint(5, 15)  # Dimensione della maschera
+                    cutout_input = input_state.copy()
+                    h_start = np.random.randint(0, nvx - mask_size)
+                    w_start = np.random.randint(0, nvy - mask_size)
+                    cutout_input[h_start:h_start+mask_size, w_start:w_start+mask_size] = 0
+                    inputs.append(torch.tensor(cutout_input, dtype=torch.float32).view(1, nvx, nvy))
+                    targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                    sigma_values.append(sigma)
         
         return inputs, targets, sigma_values
     
     def _apply_mixup(self, inputs, targets_list, sigmas, alpha=0.2):
         """
-        Applica la tecnica mixup per ridurre l'overfitting. Mixup combina coppie di esempi e target
-        in modo lineare per creare nuovi esempi di training che incoraggiano comportamenti lineari
-        tra esempi di training, migliorando la robustezza del modello.
+        Applica tecniche avanzate di mixup e cutmix per ridurre l'overfitting.
         
         Args:
             inputs: Tensore di input [batch, channels, height, width]
@@ -428,6 +532,9 @@ class CNNTrainer:
         # Caso di batch singolo: non applicare mixup
         if inputs.size(0) <= 1:
             return inputs, targets_list, sigmas
+        
+        # Scegli tra mixup (70%) e cutmix (30%)
+        use_cutmix = np.random.rand() < 0.3
             
         if alpha > 0:
             lam = np.random.beta(alpha, alpha)
@@ -437,8 +544,40 @@ class CNNTrainer:
         batch_size = inputs.size(0)
         index = torch.randperm(batch_size).to(self.device)
         
-        # Mix inputs
-        mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
+        if use_cutmix and inputs.size(2) > 10 and inputs.size(3) > 10:  # Solo se l'immagine è abbastanza grande
+            # Applica cutmix: scambia una regione rettangolare tra due immagini
+            mixed_inputs = inputs.clone()
+            _, _, H, W = inputs.shape
+            # Genera le dimensioni e posizione del rettangolo
+            cut_rat = np.sqrt(1.0 - lam)  # Rapporto di taglio
+            cut_w = int(W * cut_rat)
+            cut_h = int(H * cut_rat)
+            
+            # Assicurati che il taglio sia almeno di dimensione 1
+            cut_w = max(1, cut_w)
+            cut_h = max(1, cut_h)
+            
+            cx = np.random.randint(W)  # centro x
+            cy = np.random.randint(H)  # centro y
+            
+            # Definisce i limiti del rettangolo
+            bbx1 = np.clip(cx - cut_w // 2, 0, W)
+            bby1 = np.clip(cy - cut_h // 2, 0, H)
+            bbx2 = np.clip(cx + cut_w // 2, 0, W)
+            bby2 = np.clip(cy + cut_h // 2, 0, H)
+            
+            # Sostituisci la regione rettangolare con i dati da altre immagini
+            if bbx2 > bbx1 and bby2 > bby1:  # Verifica che il rettangolo abbia area positiva
+                mixed_inputs[:, :, bby1:bby2, bbx1:bbx2] = inputs[index, :, bby1:bby2, bbx1:bbx2]
+                
+                # Ricalcola lambda in base all'area effettivamente tagliata
+                lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1)) / (W * H)
+            else:
+                # Fallback a mixup standard
+                mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
+        else:
+            # Mixup standard
+            mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
         
         # Mix sigma values
         mixed_sigmas = lam * sigmas + (1 - lam) * sigmas[index]
@@ -473,6 +612,8 @@ class CNNTrainer:
     def train(self, train_loader, valid_loader=None, num_epochs=300, mse_weight=0.6, mae_weight=0.4, early_stop_patience=100):
         """
         Addestra il modello CNN sui dati forniti con strategia di training avanzata.
+        Utilizza SAM (Sharpness-Aware Minimization) con doppio backward pass,
+        data augmentation avanzata, SWA e altri meccanismi anti-overfitting.
         
         Args:
             train_loader: DataLoader con i dati di training
@@ -491,14 +632,15 @@ class CNNTrainer:
         history = {
             'train_loss': [],
             'valid_loss': [],
-            'learning_rate': []
+            'learning_rate': [],
+            'train_val_gap': []  # Tracciamento del gap train/validation per monitorare l'overfitting
         }
         
         best_valid_loss = float('inf')
         early_stop_counter = 0
         
         # Learning rate warmup - inizia con un LR basso e aumenta gradualmente
-        initial_lr = self.optimizer.param_groups[0]['lr']
+        initial_lr = self.optimizer.base_optimizer.param_groups[0]['lr']
         warmup_epochs = min(10, num_epochs // 10)  # 10 epoche o 10% del totale
         
         for epoch in range(num_epochs):
@@ -506,7 +648,7 @@ class CNNTrainer:
             if epoch < warmup_epochs:
                 # Aumenta linearmente il LR da 10% a 100%
                 lr_scale = 0.1 + 0.9 * epoch / warmup_epochs
-                for param_group in self.optimizer.param_groups:
+                for param_group in self.optimizer.base_optimizer.param_groups:
                     param_group['lr'] = initial_lr * lr_scale
             
             # Training
@@ -526,11 +668,21 @@ class CNNTrainer:
                 for t in targets_list:
                     targets_device.append(t.to(self.device))
                 
-                # Applica mixup con probabilità 0.3 dopo le prime 50 epoche per evitare
-                # di interferire con l'apprendimento iniziale del modello
-                use_mixup = epoch >= 50 and np.random.rand() < 0.3 and inputs.size(0) > 1
+                # Applica data augmentation avanzata con probabilità crescente
+                aug_prob = min(0.8, 0.2 + epoch / (num_epochs * 0.8))  # Aumenta gradualmente fino all'80%
+                if np.random.rand() < aug_prob:
+                    inputs = advanced_data_augmentation(
+                        inputs, 
+                        sigma=min(0.02, 0.005 + 0.015 * epoch / num_epochs),  # Rumore crescente
+                        cutout_prob=min(0.6, 0.2 + 0.4 * epoch / num_epochs),  # Probabilità cutout crescente
+                        noise_prob=min(0.8, 0.5 + 0.3 * epoch / num_epochs)    # Probabilità noise crescente
+                    )
+                
+                # Applica mixup o cutmix con probabilità crescente dopo le prime 30 epoche
+                use_mixup = epoch >= 30 and np.random.rand() < min(0.5, 0.2 + 0.3 * epoch / num_epochs) and inputs.size(0) > 1
                 if use_mixup:
-                    inputs, targets_device, sigmas = self._apply_mixup(inputs, targets_device, sigmas, alpha=0.2)
+                    mixup_alpha = min(0.4, 0.1 + 0.3 * epoch / num_epochs)  # Intensità di mixup crescente
+                    inputs, targets_device, sigmas = self._apply_mixup(inputs, targets_device, sigmas, alpha=mixup_alpha)
                 
                 # Forward pass
                 predictions = self.model(inputs, sigmas)
@@ -559,9 +711,23 @@ class CNNTrainer:
                         # Label smoothing: aggiunge un leggero rumore ai target per ridurre l'overfitting
                         # Basato sul concetto che predizioni troppo "sicure" possono portare a overfitting
                         if epoch > warmup_epochs:
-                            # Applica label smoothing solo dopo il warmup
-                            eps = 0.05  # Valore di smoothing
-                            smooth_target = target * (1 - eps) + eps/2  # Shifta leggermente dal target perfetto
+                            # Applica label smoothing solo dopo il warmup, con intensità crescente
+                            eps_min = 0.05  # Valore minimo di smoothing
+                            eps_max = 0.15  # Valore massimo di smoothing
+                            progress = min(1.0, (epoch - warmup_epochs) / (num_epochs - warmup_epochs))  # Progresso 0-1
+                            eps = eps_min + progress * (eps_max - eps_min)  # Aumenta progressivamente
+                            
+                            # Usa una distribuzione più avanzata per il label smoothing
+                            if np.random.rand() < 0.3:  # 30% probabilità di usare smoothing non uniforme
+                                # Aggiungi un po' di rumore casuale ai target (simula incertezze)
+                                noise = torch.randn_like(target) * 0.02
+                                smooth_target = target * (1 - eps) + eps/2 + noise * eps
+                            else:
+                                # Smoothing standard
+                                smooth_target = target * (1 - eps) + eps/2  # Shifta leggermente dal target perfetto
+                                
+                            # Garantisci che i valori rimangano in [0,1] per stabilità
+                            smooth_target = torch.clamp(smooth_target, 0.0, 1.0)
                         else:
                             smooth_target = target
                             
@@ -581,20 +747,59 @@ class CNNTrainer:
                 if predictions_count > 0:
                     batch_loss /= predictions_count
                 
-                # Backward pass e ottimizzazione
+                # SAM richiede due backward/step separati
+                # Prima fase: calcola e applica la perturbazione
                 self.optimizer.zero_grad()
                 batch_loss.backward()
+                self.optimizer.first_step(zero_grad=True)
                 
-                # Gradient clipping per stabilità numerica (previene esplosione di gradienti)
+                # Seconda fase: calcola gradiente sui pesi perturbati
+                # Forward pass sul modello con pesi perturbati
+                predictions_perturbed = self.model(inputs, sigmas)
+                
+                # Ricalcola la loss sui pesi perturbati
+                batch_loss_perturbed = 0.0
+                predictions_count_perturbed = 0
+                
+                for i, pred in enumerate(predictions_perturbed):
+                    if i < len(targets_device):
+                        target = targets_device[i]
+                        if target.shape[0] != pred.shape[0]:
+                            if target.shape[0] > pred.shape[0]:
+                                target = target[:pred.shape[0]]
+                            else:
+                                pred = pred[:target.shape[0]]
+                        
+                        # Usa target non-smoothed per la seconda fase SAM
+                        mse_loss = self.criterion(pred, target)
+                        mae_loss = self.mae_criterion(pred, target)
+                        step_weight = 1.0 / (1.0 + i * 0.15)
+                        combined_loss = (mse_weight * mse_loss + mae_weight * mae_loss) * step_weight
+                        batch_loss_perturbed += combined_loss
+                        predictions_count_perturbed += 1
+                
+                if predictions_count_perturbed > 0:
+                    batch_loss_perturbed /= predictions_count_perturbed
+                
+                # Backward sui pesi perturbati
+                batch_loss_perturbed.backward()
+                
+                # Gradient clipping per stabilità numerica
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 
-                self.optimizer.step()
+                # Ripristina i pesi originali e applica l'aggiornamento
+                self.optimizer.second_step(zero_grad=True)
                 
                 train_loss += batch_loss.item()
                 num_batches += 1
             
-            # Applicazione alternata degli scheduler
-            if epoch % 5 == 0:  # Cosine annealing ogni 5 epoche
+            # Gestione degli scheduler
+            if epoch >= self.swa_start:
+                # Dopo l'inizio di SWA, usa lo scheduler SWA
+                self.swa_model.update_parameters(self.model)
+                self.swa_scheduler.step()
+            elif epoch % 5 == 0:
+                # Prima dell'inizio di SWA, usa cosine annealing ogni 5 epoche
                 self.cosine_scheduler.step()
             
             # Salva il learning rate corrente
@@ -776,3 +981,165 @@ class CNNTrainer:
         
         # Close the figure to release memory
         plt.close(fig)
+
+class SAM(torch.optim.Optimizer):
+    """
+    Implementazione di Sharpness-Aware Minimization (SAM)
+    che cerca minimi più ampi e piatti della funzione di loss.
+    
+    Basato su: Foret et al., "Sharpness-Aware Minimization for Efficiently Improving Generalization"
+    https://arxiv.org/abs/2010.01412
+    
+    Questa tecnica offre un'ottima generalizzazione per modelli profondi.
+    """
+    def __init__(self, params, base_optimizer, rho=0.05, adaptive=False, **kwargs):
+        """
+        Args:
+            params: iterabile con i parametri del modello
+            base_optimizer: ottimizzatore base (es. torch.optim.SGD)
+            rho: parametro di perturbazione per la norma del gradiente
+            adaptive: se True, usa una perturbazione specifica per ogni parametro
+            **kwargs: parametri aggiuntivi per l'ottimizzatore base
+        """
+        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
+        super(SAM, self).__init__(params, defaults)
+        
+        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        self.param_groups = self.base_optimizer.param_groups
+        self.defaults.update(self.base_optimizer.defaults)
+    
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        """
+        Calcola e applica la perturbazione ai pesi.
+        Deve essere chiamato dopo loss.backward() ma prima di optimizer.step()
+        """
+        grad_norm = self._grad_norm()
+        
+        for group in self.param_groups:
+            scale = group["rho"] / (grad_norm + 1e-12)
+            
+            for p in group["params"]:
+                if p.grad is None: continue
+                
+                # Calcola perturbazione
+                if group["adaptive"]:
+                    perturb = p.grad * scale.to(p) * (p.abs() + 1e-12)
+                else:
+                    perturb = p.grad * scale.to(p)
+                
+                # Perturba i pesi
+                self.state[p]["old_p"] = p.data.clone()
+                p.add_(perturb)
+        
+        if zero_grad: self.zero_grad()
+    
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        """
+        Ripristina i pesi originali e applica l'aggiornamento normale.
+        Deve essere chiamato dopo la seconda loss.backward()
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None or "old_p" not in self.state[p]: continue
+                p.data = self.state[p]["old_p"]  # Ripristina i pesi originali
+        
+        self.base_optimizer.step()  # Applica l'ottimizzazione normale
+        
+        if zero_grad: self.zero_grad()
+    
+    def _grad_norm(self):
+        """
+        Calcola la norma L2 dei gradienti, usata per la perturbazione
+        """
+        norm = torch.norm(
+            torch.stack([
+                ((p.grad.detach().abs() ** 2).sum() if p.grad is not None else 0.0)
+                for group in self.param_groups for p in group["params"]
+            ]).float().sqrt()
+        )
+        return norm
+    
+    def step(self, closure=None):
+        """
+        Esegue un passo di ottimizzazione (prima e seconda fase)
+        """
+        if closure is not None:
+            raise RuntimeError("SAM richiede due backward/step separati - usa first_step e second_step")
+        
+        raise RuntimeError("SAM richiede due backward/step separati - usa first_step e second_step")
+
+class ShakeShake(nn.Module):
+    """Implementazione di Shake-Shake regularization (Gastaldi, 2017)
+    Una tecnica per regolarizzare modelli con connessioni parallele."""
+    def __init__(self):
+        super(ShakeShake, self).__init__()
+
+    def forward(self, x1, x2):
+        if self.training:
+            # Coefficienti casuali per il forward pass
+            alpha = torch.rand(x1.size(0), 1, 1, 1).to(x1.device)
+            # Forward pass: shake
+            y = alpha * x1 + (1 - alpha) * x2
+            # Genera nuovi coefficienti casuali per il backward pass
+            self.beta = torch.rand(x1.size(0), 1, 1, 1).to(x1.device)
+            return y
+        else:
+            # In fase di validazione, media semplice (0.5/0.5)
+            return 0.5 * x1 + 0.5 * x2
+    
+    def backward(self, grad_output):
+        # Backward pass utilizza i coefficienti beta invece di alpha
+        return self.beta * grad_output, (1 - self.beta) * grad_output
+
+def advanced_data_augmentation(inputs, sigma=0.02, cutout_prob=0.5, noise_prob=0.8):
+    """
+    Applica tecniche di data augmentation avanzate alle immagini di input.
+    
+    Args:
+        inputs: Tensore di input [batch_size, channels, height, width]
+        sigma: Forza del rumore gaussiano
+        cutout_prob: Probabilità di applicare cutout
+        noise_prob: Probabilità di applicare rumore gaussiano
+        
+    Returns:
+        Tensore augmentato della stessa dimensione
+    """
+    batch_size, channels, height, width = inputs.shape
+    augmented = inputs.clone()
+    
+    # Rumore gaussiano con probabilità noise_prob
+    if random.random() < noise_prob:
+        noise = torch.randn_like(augmented) * sigma * random.uniform(0.5, 1.5)
+        augmented = augmented + noise
+        augmented = torch.clamp(augmented, 0.0, 1.0)
+    
+    # Cutout con probabilità cutout_prob
+    if random.random() < cutout_prob:
+        # Definisci dimensioni del cutout (10-20% dell'immagine)
+        cutout_size_h = int(height * random.uniform(0.1, 0.2))
+        cutout_size_w = int(width * random.uniform(0.1, 0.2))
+        
+        # Per ogni immagine nel batch
+        for i in range(batch_size):
+            # Posizione casuale del cutout
+            top = random.randint(0, height - cutout_size_h - 1)
+            left = random.randint(0, width - cutout_size_w - 1)
+            
+            # Applica cutout (metti a zero)
+            augmented[i, :, top:top+cutout_size_h, left:left+cutout_size_w] = 0.0
+    
+    # Shift dei valori con probabilità 0.3
+    if random.random() < 0.3:
+        shift = random.uniform(-0.05, 0.05)
+        augmented = augmented + shift
+        augmented = torch.clamp(augmented, 0.0, 1.0)
+    
+    # Jitter di contrasto con probabilità 0.3
+    if random.random() < 0.3:
+        factor = random.uniform(0.8, 1.2)
+        augmented = (augmented - 0.5) * factor + 0.5
+        augmented = torch.clamp(augmented, 0.0, 1.0)
+    
+    return augmented
