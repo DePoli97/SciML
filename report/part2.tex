@@ -1,0 +1,85 @@
+
+\section{Deep Learning Approaches}
+
+In our research, we explored three different deep learning architectures to solve the monodomain equation, aiming to find a surrogate model that could be faster than the traditional Finite Element Method (FEM) while maintaining high accuracy. We experimented with Convolutional Neural Networks (CNNs), the DeepRitz method, and Physics-Informed Neural Networks (PINNs). Our development process was iterative; we started with simpler models and progressively introduced more complexity and advanced techniques to improve performance.
+
+\subsection{Convolutional Neural Network (CNN) as a Surrogate Model}
+
+The core idea behind using a CNN is to treat the problem as an image-to-image translation task. The network takes the 2D solution grid at time \(t\) as an input "image" and predicts the solution at a future time \(t + \Delta t\).
+
+\subsubsection{Initial Model: $cnn_model_000001$}
+Our first attempt was a standard U-Net architecture. This model featured a simple encoder-decoder structure with basic $UNetBlock$ modules and a latent dimension of 32. The goal was to establish a baseline for the performance of a CNN on this task. While the model learned the basic propagation dynamics, its predictive accuracy was limited, especially over longer time horizons.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../models/cnn_model_000001/training_loss.png}
+    \caption{Training loss for the initial CNN model ($cnn_model_000001$).}
+    \label{fig:cnn_loss_1}
+\end{figure}
+
+\subsubsection{Advanced Model: $cnn_model_000002$}
+To improve upon the baseline, we developed a more sophisticated architecture. The key enhancements in this version were:
+\begin{itemize}
+    \item \textbf{Residual Connections:} We replaced the standard U-Net blocks with $ResUNetBlock$s. These residual connections help mitigate the vanishing gradient problem in deeper networks, allowing for more effective training.
+    \item \textbf{Increased Depth and Latent Space:} We significantly deepened the encoder and decoder and increased the latent dimension to 128, allowing the model to capture more complex spatial features.
+    \item \textbf{Regularization:} We introduced Dropout with a rate of 0.2 to combat overfitting.
+\end{itemize}
+This model ($cnn_model_180652$, saved as $cnn_model_000002$) was trained for 1000 epochs, achieving a final training loss of 0.04 and a validation loss of 0.32. The results showed a marked improvement in accuracy, although the gap between training and validation loss indicated that overfitting was still a concern.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../models/cnn_model_000002/training_loss.png}
+    \caption{Training and validation loss for the advanced ResUNet model ($cnn_model_000002$).}
+    \label{fig:cnn_loss_2}
+\end{figure}
+
+\subsubsection{Further Experiments: $cnn_model_010647$ and $cnn_model_104653$}
+In subsequent iterations, we experimented with state-of-the-art techniques to further enhance training stability and generalization:
+\begin{itemize}
+    \item \textbf{Weight Standardization and Spectral Normalization:} These techniques were introduced to regularize the weights of the convolutional layers, improving the conditioning of the optimization problem.
+    \item \textbf{Group Normalization:} We replaced Batch Normalization with Group Normalization to make the training process less dependent on the batch size.
+    \item \textbf{Stochastic Depth:} During training, entire ResUNet blocks were randomly dropped. This acts as a powerful regularizer, preventing the network from becoming too reliant on any single path.
+\end{itemize}
+These advanced models demonstrated more stable training dynamics, but required careful hyperparameter tuning. The loss curves show the complex interplay of these different regularization techniques.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{../models/cnn_model_010647/training_loss.png}
+        \caption{Model $cnn_model_010647$}
+        \label{fig:cnn_loss_3}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{../models/cnn_model_104653/training_loss.png}
+        \caption{Model $cnn_model_104653$}
+        \label{fig:cnn_loss_4}
+    \end{subfigure}
+    \caption{Training losses for CNNs with advanced regularization techniques.}
+\end{figure}
+
+\subsection{Deep Ritz Method}
+The Deep Ritz method offers a different paradigm. Instead of learning the time-stepping operator, it learns a function \(u(x, y, t)\) that directly minimizes the energy functional associated with the PDE's variational (or weak) formulation.
+
+\subsubsection{Model $deepritz_model_220842$}
+Our implementation, $DeepRitzSolver$, is a Multi-Layer Perceptron (MLP) that takes spatial and temporal coordinates \((x, y, t)\) as input and outputs the solution \(u\). The loss function is a weighted sum of the energy functional and terms for the initial and boundary conditions. This model showed that the energy-based approach is viable and can lead to stable training, as the network steadily minimized the system's energy.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../models/deepritz_model_220842/training_loss.png}
+    \caption{Training loss for the Deep Ritz model ($deepritz_model_220842$).}
+    \label{fig:deepritz_loss}
+\end{figure}
+
+\subsection{Physics-Informed Neural Network (PINN)}
+The PINN approach is similar to Deep Ritz in that it learns the function \(u(x, y, t)\), but it enforces the PDE in its strong form. The loss function directly penalizes the PDE residual.
+
+\subsubsection{Model $pinn_model_113908$}
+Our $PINNSolver$ uses an MLP architecture similar to the Deep Ritz model. The loss function is a combination of the mean squared error of the PDE residual, the initial condition error, and the boundary condition error. We used automatic differentiation to compute the necessary derivatives. Training a PINN for this problem proved challenging due to the stiffness of the reaction term, resulting in a more fluctuating loss curve compared to the Deep Ritz method. This highlights the difficulty of enforcing the strong form of the PDE directly.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../models/pinn_model_113908/training_loss.png}
+    \caption{Training loss for the PINN model ($pinn_model_113908$).}
+    \label{fig:pinn_loss}
+\end{figure}
