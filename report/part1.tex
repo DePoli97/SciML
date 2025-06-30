@@ -227,7 +227,7 @@ The systematic parameter study in \texttt{run\_all\_simulations\_ex\_1\_7.m} eva
 \paragraph{Parameter Space}
 \begin{itemize}
     \item Time steps: $\Delta t \in \{0.1, 0.05, 0.025\}$ ms
-    \item Grid resolutions: $n_e \in \{64, 128, 256\}$ elements (corresponding to $9 \times 9$, $12 \times 12$, $17 \times 17$ vertex grids)
+    \item Grid resolutions: $n_e \in \{64, 128, 256\}$ elements
     \item Conductivity ratios: $\sigma_d/\sigma_h \in \{10, 1, 0.1\}$
 \end{itemize}
 
@@ -247,7 +247,7 @@ This systematic approach reveals the critical importance of adequate spatial res
 
 \subsubsection{Parameter Study Results}
 
-Table~\ref{tab:simulation_results} presents the systematic evaluation of the finite element solver across different parameter combinations. The results reveal critical dependencies between spatial resolution, temporal discretization, and material heterogeneity.
+The table presents the systematic evaluation of the finite element solver across different parameter combinations. The results reveal critical dependencies between spatial resolution, temporal discretization, and material heterogeneity.
 
 \begin{table}[H]
 \centering
@@ -300,51 +300,11 @@ Table~\ref{tab:simulation_results} presents the systematic evaluation of the fin
     \item \textbf{Activation Time Consistency}: When activation occurs, the timing is remarkably consistent across different conductivity ratios (1.20-1.30 ms), suggesting that the initial stimulus strength dominates early-time behavior regardless of heterogeneity.
 \end{enumerate}
 
-\subsubsection{Conductivity Ratio Effects}
-
-Surprisingly, the heterogeneous conductivity patterns show minimal impact on activation times when spatial resolution is adequate. This can be attributed to:
-
-\begin{itemize}
-    \item \textbf{Initial Stimulus Location}: The stimulus originates in the corner region $(x \geq 0.9, y \geq 0.9)$, which is typically in healthy tissue, providing strong initial propagation regardless of downstream heterogeneity.
-    
-    \item \textbf{Early Time Dominance}: The measured activation times (=1.2 ms) occur before the wave significantly interacts with the diseased regions, explaining the minimal sensitivity to $\sigma_d/\sigma_h$.
-    
-    \item \textbf{Threshold Detection}: The activation criterion ($u > f_t = 0.2383$) may be reached locally before global wave patterns are established.
-\end{itemize}
-
-\subsubsection{Computational Considerations}
-
-The MATLAB implementation demonstrates several important computational aspects:
-
-\begin{itemize}
-    \item \textbf{Matrix Assembly Efficiency}: The tensor product approach using Kronecker products provides an efficient way to construct local stiffness matrices while maintaining code readability.
-    
-    \item \textbf{Sparse Matrix Utilization}: The global assembly uses MATLAB's sparse matrix capabilities, essential for handling the large systems arising from fine spatial discretizations.
-    
-    \item \textbf{Linear System Solution}: Direct factorization (backslash operator) is used for the linear systems, which is appropriate for the problem sizes considered but may require iterative solvers for larger systems.
-\end{itemize}
-
 \subsection{Visualization and Wave Propagation Analysis}
 
 \subsubsection{Activation Pattern Visualization}
 
 The graphic visualization implementation in \texttt{graphic\_visualization\_ex\_1\_8.m} provides comprehensive insight into the wave propagation dynamics. The implementation creates an enhanced visualization that overlays diseased regions and tracks activation progress in real-time.
-
-\paragraph{Enhanced Visualization Features}
-
-\begin{lstlisting}[language=Matlab, caption=Enhanced visualization with diseased region overlay]
-% Define diseased regions with severity visualization
-diseased_regions = {@(x,y)(x-0.3).^2 + (y-0.7).^2 < 0.1^2, ... % \Omega_{d1}
-                    @(x,y)(x-0.7).^2 + (y-0.3).^2 < 0.15^2, ... % \Omega_{d2}
-                    @(x,y)(x-0.5).^2 + (y-0.5).^2 < 0.1^2};     % \Omega_{d3}
-
-% Overlay diseased regions with different transparencies
-for i = 1:length(diseased_regions)
-    mask = diseased_regions{i}(X, Y);
-    surf(X, Y, Z, 'FaceColor', 'red', ...
-         'FaceAlpha', 0.2 + 0.1*i, 'EdgeColor', 'none');
-end
-\end{lstlisting}
 
 \paragraph{Multi-Panel Analysis}
 The visualization system provides four synchronized views:
@@ -447,32 +407,6 @@ Several important limitations emerged from the analysis:
     \item \textbf{Bounds Violations}: The frequent violation of solution bounds $u \in [0,1]$ suggests that the IMEX scheme may require stabilization for robust performance across diverse parameter ranges.
     
     \item \textbf{Temporal Sensitivity}: The strong coupling between spatial and temporal discretization parameters limits the flexibility in choosing efficient time step sizes.
-\end{enumerate}
-
-\subsubsection{Comparison with Alternative Methods}
-
-The finite element implementation provides a valuable baseline for comparison with alternative numerical approaches:
-
-\begin{itemize}
-    \item \textbf{vs. Finite Differences}: The FEM naturally handles heterogeneous media and complex geometries, but at the cost of more complex matrix assembly.
-    
-    \item \textbf{vs. Neural Networks}: The FEM provides guaranteed convergence properties and well-understood error analysis, while neural methods may offer better efficiency for repeated evaluations.
-    
-    \item \textbf{vs. Spectral Methods}: For smooth solutions, spectral methods might provide higher accuracy, but the reaction-diffusion equation's sharp fronts favor the local support properties of finite elements.
-\end{itemize}
-
-\subsubsection{Recommendations for Improvement}
-
-Based on the analysis, several improvements could enhance the FEM implementation:
-
-\begin{enumerate}
-    \item \textbf{Adaptive Mesh Refinement}: Implement adaptive spatial refinement to concentrate computational effort near wave fronts while maintaining efficiency in smooth regions.
-    
-    \item \textbf{Stabilization Techniques}: Add stabilization terms to ensure M-matrix properties and solution bounds, particularly for challenging parameter combinations.
-    
-    \item \textbf{Higher-Order Elements}: Consider quadratic or higher-order elements to improve accuracy per degree of freedom, potentially reducing the spatial resolution requirements.
-    
-    \item \textbf{Advanced Time Integration}: Explore higher-order IMEX schemes or adaptive time stepping to improve temporal accuracy and stability margins.
 \end{enumerate}
 
 This comprehensive analysis of the finite element implementation provides important insights into the numerical challenges of cardiac tissue modeling and establishes a solid foundation for understanding the trade-offs inherent in different computational approaches.
