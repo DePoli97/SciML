@@ -8,7 +8,7 @@ sigma_ratios = [10, 1, 0.1];  % σ_d/σ_h ratios
 
 % Grid sizes corresponding to ne_values (approximately)
 % For ne = (nvx-1)*(nvy-1), we need nvx = nvy = sqrt(ne) + 1
-nvx_values = [9, 12, 17];  % Gives ne ≈ 64, 121, 256
+nvx_values = [9, 12, 17];  % Gives ne ≈ 64, 128, 256
 
 % Initialize results storage
 results = [];

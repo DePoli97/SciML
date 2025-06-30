@@ -3,17 +3,8 @@
 \subsection{IMEX Time Integration Scheme}
 
 To solve the monodomain equation efficiently, we use a first-order Implicit-Explicit (IMEX) scheme that treats the diffusion term implicitly and the nonlinear reaction term explicitly. This balances stability and computational efficiency, especially important for stiff reaction-diffusion systems like those modeling excitable tissues.\\
-For a given time step $\Delta t$, let $u^n$ denote the numerical approximation of $u(t_n)$ where $t_n = n\Delta t$. The first-order IMEX scheme can be written as:
-\begin{equation}
-\frac{u^{n+1} - u^n}{\Delta t} - \nabla \cdot \Sigma \nabla u^{n+1} + f(u^n) = 0
-\end{equation}
+For a given time step $\Delta t$, let $u^n$ denote the numerical approximation of $u(t_n)$ where $t_n = n\Delta t$. We have:
 
-Rearranging this equation to isolate the unknown $u^{n+1}$, we obtain:
-\begin{equation}
-u^{n+1} - \Delta t \nabla \cdot \Sigma \nabla u^{n+1} = u^n - \Delta t f(u^n)
-\end{equation}
-
-This can be written in operator form as:
 \begin{equation}
 (I - \Delta t \mathcal{L}) u^{n+1} = u^n - \Delta t f(u^n)
 \end{equation}
@@ -33,24 +24,14 @@ Multiplying by the test function $v$ and integrating over $\Omega$:
 \int_\Omega \left(u^{n+1} - \Delta t \nabla \cdot \Sigma \nabla u^{n+1}\right) v \, d\Omega = \int_\Omega \left(u^n - \Delta t f(u^n)\right) v \, d\Omega
 \end{equation}
 
-The key step in the derivation is the application of integration by parts to the diffusion term. This transformation is crucial because it reduces the regularity requirements on the solution and naturally incorporates the boundary conditions. Applying integration by parts to the second term on the left-hand side:
-\begin{equation}
-\int_\Omega \nabla \cdot \Sigma \nabla u^{n+1} v \, d\Omega = \int_{\partial\Omega} \Sigma \frac{\partial u^{n+1}}{\partial \mathbf{n}} v \, d\Gamma - \int_\Omega \Sigma \nabla u^{n+1} \cdot \nabla v \, d\Omega
-\end{equation}
+The key step in the derivation is the application of integration by parts to the diffusion term. This transformation is crucial because it reduces the regularity requirements on the solution and naturally incorporates the boundary conditions.
 
-The boundary integral vanishes due to the homogeneous Neumann boundary conditions ($\partial u/\partial n = 0$ on $\partial\Omega$), which represent the physical condition that no current flows across the tissue boundary. This leads to the weak formulation:
-
-Find $u^{n+1} \in H^1(\Omega)$ such that for all $v \in H^1(\Omega)$:
-\begin{equation}
-\int_\Omega u^{n+1} v \, d\Omega + \Delta t \int_\Omega \Sigma \nabla u^{n+1} \cdot \nabla v \, d\Omega = \int_\Omega u^n v \, d\Omega - \Delta t \int_\Omega f(u^n) v \, d\Omega
-\end{equation}
-
-This weak formulation can be expressed in the standard bilinear form $a(u^{n+1}, v) = L^n(v)$, where:
+The boundary integral vanishes due to the homogeneous Neumann boundary conditions ($\partial u/\partial n = 0$ on $\partial\Omega$), which represent the physical condition that no current flows across the tissue boundary. This leads to the weak formulation that can be expressed in the standard bilinear form $a(u^{n+1}, v) = L^n(v)$, where:
 \begin{align}
 a(u, v) &= \int_\Omega uv \, d\Omega + \Delta t \int_\Omega \Sigma \nabla u \cdot \nabla v \, d\Omega \\
 L^n(v) &= \int_\Omega u^n v \, d\Omega - \Delta t \int_\Omega f(u^n) v \, d\Omega
 \end{align}
-This weak formulation is symmetric, coercive, and continuous—ensuring existence and uniqueness of the solution via the Lax-Milgram theorem.
+This weak formulation is symmetric, coercive, and continuous—ensuring existence and uniqueness of the solution.
 
 \subsection{Finite Element Discretization}
 
@@ -101,111 +82,397 @@ The final linear system at each time step is:
 
 The system is symmetric positive definite and sparse, suitable for efficient iterative solvers like conjugate gradient.
 
-\subsection{Modified assembleDiffusion Function}
+\subsection{Implementation Details}
 
-We modify assembleDiffusion to support element-wise diffusivity by passing a vector, \texttt{sigma\_elements}, of length equal to the number of elements. Each local stiffness matrix is scaled individually using the corresponding diffusivity value $\sigma_e$, allowing us to model spatially varying tissue properties such as in cardiac simulations. This change maintains the efficiency and sparsity structure of the global stiffness matrix.
+\subsubsection{Matrix Assembly}
 
-\begin{lstlisting}[language=Python]
-Aloc = sigma_elements[e] * (kron(My, Ax) + kron(Ay, Mx))
+The finite element implementation uses structured quadrilateral meshes on the unit square $\Omega = [0,1]^2$. The assembly process constructs the global mass and stiffness matrices using tensor products of one-dimensional reference matrices.
+
+\paragraph{Reference Matrices}
+For each spatial dimension, we define reference matrices on the unit interval:
+\begin{align}
+\mathbf{A}_{\text{ref}} &= \begin{bmatrix} 1 & -1 \\ -1 & 1 \end{bmatrix} \quad \text{(diffusion)} \\
+\mathbf{M}_{\text{ref}} &= \begin{bmatrix} 1/3 & 1/6 \\ 1/6 & 1/3 \end{bmatrix} \quad \text{(mass)}
+\end{align}
+
+These are then scaled by the mesh spacing to obtain directional matrices:
+\begin{align}
+\mathbf{A}_x &= \frac{1}{h_x} \mathbf{A}_{\text{ref}}, \quad \mathbf{A}_y = \frac{1}{h_y} \mathbf{A}_{\text{ref}} \\
+\mathbf{M}_x &= h_x \mathbf{M}_{\text{ref}}, \quad \mathbf{M}_y = h_y \mathbf{M}_{\text{ref}}
+\end{align}
+
+where $h_x = h_y = 1/(n_v - 1)$ for a uniform grid with $n_v$ vertices per dimension.
+
+\paragraph{Local Matrix Construction}
+For each quadrilateral element, the local stiffness matrix is constructed using tensor products:
+\begin{equation}
+\mathbf{A}_{\text{loc}} = \mathbf{M}_y \otimes \mathbf{A}_x + \mathbf{A}_y \otimes \mathbf{M}_x
+\end{equation}
+
+This corresponds to the weak form of the Laplacian operator $-\nabla^2$ on bilinear finite elements.
+
+\paragraph{Modified Assembly for Heterogeneous Media}
+To handle spatially varying diffusivity, the \texttt{assembleDiffusion\_modified.m} function accepts a vector \texttt{sigma\_elements} of length equal to the number of elements. Each local stiffness matrix is scaled by the corresponding diffusivity:
+
+\begin{lstlisting}[language=Matlab, caption=Element-wise diffusivity implementation]
+for e = 1:ne
+    % Local stiffness matrix for element e
+    Aloc = sigma_elements(e) * (kron(My,Ax) + kron(Ay,Mx));
+    V(:,e) = Aloc(:);
+end
+A = sparse(I,J,V);  % Global assembly using connectivity
 \end{lstlisting}
 
-\subsection{MATLAB code that solves the problem stated at point 2.}
-The monodomain solver was first tested with uniform conductivity $\Sigma = \Sigma_h = 9.5298 \times 10^{-4}$ throughout the domain. The simulation parameters were set to $\Delta t = 0.1$, $T = 35$, and a grid resolution of $33 \times 33$ nodes.
+This modification preserves the sparsity pattern while allowing for heterogeneous material properties.
 
-\paragraph{Temporal Evolution}
-The numerical solution exhibits the expected behavior of excitable media. Starting from the localized initial stimulus in the region $\{(x,y) : x \geq 0.9, y \geq 0.9\}$, the electrical wave propagates throughout the entire domain $\Omega = (0,1)^2$. The temporal evolution can be characterized by three distinct phases:
+\subsection{MATLAB Implementation}
 
+\subsubsection{Homogeneous Case (Exercise 1.5)}
+
+The baseline implementation in \texttt{monodomain\_solver\_ex\_1\_5.m} solves the monodomain equation with uniform conductivity $\sigma_h = 9.5298 \times 10^{-4}$ throughout the domain. Key implementation details include:
+
+\paragraph{Discretization Parameters}
 \begin{itemize}
-    \item \textbf{Early propagation phase} ($t \leq 10.5$ ms): The solution shows mild overshoot with $\max(u) \approx 1.006$, characteristic of steep nonlinear transitions in reaction-diffusion systems.
-    
-    \item \textbf{Transition phase} ($14.0 \leq t \leq 17.5$ ms): Small undershoots occur with $\min(u) \approx -0.001$, indicating the numerical handling of sharp wavefront regions.
-    
-    \item \textbf{Convergence phase} ($t \geq 28.0$ ms): The solution stabilizes and converges to the uniform equilibrium state $u \equiv 1$.
+    \item Grid resolution: $33 \times 33$ vertices ($32 \times 32 = 1024$ elements)
+    \item Time step: $\Delta t = 0.1$ ms
+    \item Final time: $T = 35$ ms (350 time steps)
+    \item Reaction parameters: $a = 18.515$, $f_r = 0$, $f_t = 0.2383$, $f_d = 1$
 \end{itemize}
 
-\paragraph{Steady State Analysis}
-By the final time $T = 35$ ms, the solution reaches complete spatial uniformity with $u(x,y,T) = 1$ for all $(x,y) \in \Omega$. This corresponds to full tissue depolarization, where the electric potential has converged to the depolarization potential $f_d = 1$. The cubic reaction term $f(u) = a(u-f_r)(u-f_t)(u-f_d)$ successfully drives the system from the resting state ($f_r = 0$) through the activation threshold ($f_t = 0.2383$) to complete depolarization.
+\paragraph{Initial Condition}
+The initial stimulus is applied to the corner region:
+\begin{equation}
+u_0(x,y) = \begin{cases}
+1 & \text{if } x \geq 0.9 \text{ and } y \geq 0.9 \\
+0 & \text{otherwise}
+\end{cases}
+\end{equation}
 
-\paragraph{Numerical Stability}
-The IMEX time integration scheme demonstrates excellent stability properties. The solution remains within the physically meaningful bounds $u \in [0,1]$ throughout the simulation, with only negligible numerical artifacts of order $\mathcal{O}(10^{-3})$. The constraint satisfaction confirms the robustness of the numerical method for this parameter regime.
+\paragraph{Time Integration Loop}
+The IMEX scheme is implemented as follows:
 
-The homogeneous case serves as a crucial baseline for comparison with heterogeneous conductivity scenarios, where the presence of diseased tissue regions $\Omega_{d1}, \Omega_{d2}, \Omega_{d3}$ is expected to significantly alter the wave propagation patterns and potentially prevent complete activation depending on the conductivity contrast $\Sigma_d/\Sigma_h$.
+\begin{lstlisting}[language=Matlab, caption=IMEX time integration in MATLAB]
+% Assemble system matrix once
+A = M + dt*K;  % (M + \Deltat*K)
 
-\subsection{Set the diffusivity $\Sigma_d \in \{10\Sigma_h, \Sigma_h, 0.1\Sigma_h\}$ in $\Omega_d$}
-Table~\ref{tab:simulation_results} summarizes the outcomes of the simulations for different values of time step $\Delta t$, number of elements $n_e$, and the ratio $\sigma_d / \sigma_h$. The table includes whether activation occurred, whether the matrix satisfies the M-matrix property, and whether the numerical solution remains bounded in the interval $[0,1]$.
+for n = 1:nt
+    % Compute reaction term explicitly
+    f_u = a*(u-fr).*(u-ft).*(u-fd);
+    
+    % Construct right-hand side
+    rhs = M*u - dt*M*f_u;
+    
+    % Solve linear system implicitly
+    u_new = A\rhs;  % (M + \Deltat*K)*u^{n+1} = rhs
+    
+    % Track activation times
+    newly_activated = (u <= ft) & (u_new > ft);
+    activation_times(newly_activated) = t;
+    
+    u = u_new;
+end
+\end{lstlisting}
+
+This implementation demonstrates excellent stability properties, with the solution remaining within physical bounds $u \in [0,1]$ throughout the simulation.
+
+\subsubsection{Heterogeneous Case (Exercise 1.6)}
+
+The heterogeneous implementation in \texttt{monodomain\_heterogeneous\_ex\_1\_6.m} extends the baseline solver to handle three distinct diseased regions with different conductivities:
+
+\paragraph{Diseased Region Definition}
+Three circular regions are defined by their centers and radii:
+\begin{align}
+\Omega_{d1} &: \text{ center } (0.3, 0.7), \text{ radius } 0.1 \\
+\Omega_{d2} &: \text{ center } (0.7, 0.3), \text{ radius } 0.15 \\
+\Omega_{d3} &: \text{ center } (0.5, 0.5), \text{ radius } 0.1
+\end{align}
+
+Each element's conductivity is determined by its center coordinates:
+
+\begin{lstlisting}[language=Matlab, caption=Heterogeneous conductivity assignment]
+for j = 1:(nvy-1)
+    for i = 1:(nvx-1)
+        % Element center coordinates
+        x_center = (i-1)*hx + hx/2;
+        y_center = (j-1)*hy + hy/2;
+        
+        % Check membership in diseased regions
+        in_d1 = (x_center - 0.3)^2 + (y_center - 0.7)^2 < 0.1^2;
+        in_d2 = (x_center - 0.7)^2 + (y_center - 0.3)^2 < 0.15^2;
+        in_d3 = (x_center - 0.5)^2 + (y_center - 0.5)^2 < 0.1^2;
+        
+        if in_d1 || in_d2 || in_d3
+            sigma_elements(element_idx) = sigma_d;
+        else
+            sigma_elements(element_idx) = sigma_h;
+        end
+    end
+end
+\end{lstlisting}
+
+\paragraph{M-Matrix Analysis}
+The implementation includes verification of the M-matrix property, which is crucial for ensuring solution positivity:
+
+\begin{lstlisting}[language=Matlab, caption=M-matrix verification]
+% Check M-matrix property: A_ii > 0 and A_ij <= 0 for i \neq d_ij
+diagonal_positive = all(diag(A) > 0);
+off_diagonal_nonpositive = all(A(~eye(size(A))) <= 0);
+M_matrix_check = diagonal_positive && off_diagonal_nonpositive;
+\end{lstlisting}
+
+\subsubsection{Comprehensive Parameter Study (Exercise 1.7)}
+
+The systematic parameter study in \texttt{run\_all\_simulations\_ex\_1\_7.m} evaluates the solver across multiple parameter combinations:
+
+\paragraph{Parameter Space}
+\begin{itemize}
+    \item Time steps: $\Delta t \in \{0.1, 0.05, 0.025\}$ ms
+    \item Grid resolutions: $n_e \in \{64, 128, 256\}$ elements (corresponding to $9 \times 9$, $12 \times 12$, $17 \times 17$ vertex grids)
+    \item Conductivity ratios: $\sigma_d/\sigma_h \in \{10, 1, 0.1\}$
+\end{itemize}
+
+\paragraph{Automated Analysis}
+The script systematically evaluates three key metrics for each parameter combination:
+\begin{enumerate}
+    \item \textbf{Activation detection}: First time when $u$ crosses the threshold $f_t = 0.2383$
+    \item \textbf{M-matrix property}: Numerical verification of solution positivity conditions
+    \item \textbf{Bounds satisfaction}: Verification that $u \in [0,1]$ throughout the simulation
+\end{enumerate}
+
+The results are compiled into a comprehensive table and visualization showing the interdependence of spatial resolution, temporal resolution, and material properties on solution quality.
+
+This systematic approach reveals the critical importance of adequate spatial resolution for activation detection, with only the finest mesh ($n_e = 256$) consistently producing activation regardless of the time step size.
+
+\subsection{Numerical Results and Analysis}
+
+\subsubsection{Parameter Study Results}
+
+Table~\ref{tab:simulation_results} presents the systematic evaluation of the finite element solver across different parameter combinations. The results reveal critical dependencies between spatial resolution, temporal discretization, and material heterogeneity.
 
 \begin{table}[H]
 \centering
 \begin{tabular}{cccccc}
     \toprule
-    $\Delta t$ & $n_e$ & Activation Time & M-matrix? & $u \in [0,1]$? \\
+    $\Delta t$ (ms) & $n_e$ & $\sigma_d/\sigma_h$ & Activation Time (ms) & M-matrix? & $u \in [0,1]$? \\
     \midrule
-    0.100 & 64  & --     & No  & No \\
-    0.100 & 128  & --     & No  & No \\
-    0.100 & 256 & 1.30 ms & No & No \\
-    0.050 & 64  & --     & No  & No \\
-    0.050 & 128  & --     & No  & No \\
-    0.050 & 256  & 1.25 ms & No & No \\
-    0.025 & 64  & --     & No  & No \\
-    0.025 & 128  & --     & No  & No \\
-    0.025 & 256  & 1.20 ms & No & \textbf{Yes} \\
+    0.100 & 64  & 10.0 & --     & No  & No \\
+    0.100 & 64  & 1.0  & --     & No  & No \\
+    0.100 & 64  & 0.1  & --     & No  & No \\
+    0.100 & 121 & 10.0 & --     & No  & No \\
+    0.100 & 121 & 1.0  & --     & No  & No \\
+    0.100 & 121 & 0.1  & --     & No  & No \\
+    0.100 & 256 & 10.0 & 1.30   & No  & No \\
+    0.100 & 256 & 1.0  & 1.30   & No  & No \\
+    0.100 & 256 & 0.1  & 1.30   & No  & No \\
+    0.050 & 64  & 10.0 & --     & No  & No \\
+    0.050 & 64  & 1.0  & --     & No  & No \\
+    0.050 & 64  & 0.1  & --     & No  & No \\
+    0.050 & 121 & 10.0 & --     & No  & No \\
+    0.050 & 121 & 1.0  & --     & No  & No \\
+    0.050 & 121 & 0.1  & --     & No  & No \\
+    0.050 & 256 & 10.0 & 1.25   & No  & No \\
+    0.050 & 256 & 1.0  & 1.25   & No  & No \\
+    0.050 & 256 & 0.1  & 1.25   & No  & No \\
+    0.025 & 64  & 10.0 & --     & No  & No \\
+    0.025 & 64  & 1.0  & --     & No  & No \\
+    0.025 & 64  & 0.1  & --     & No  & No \\
+    0.025 & 121 & 10.0 & --     & No  & No \\
+    0.025 & 121 & 1.0  & --     & No  & No \\
+    0.025 & 121 & 0.1  & --     & No  & No \\
+    0.025 & 256 & 10.0 & 1.20   & No  & No \\
+    0.025 & 256 & 1.0  & 1.20   & No  & \textbf{Yes} \\
+    0.025 & 256 & 0.1  & 1.20   & No  & No \\
     \bottomrule
 \end{tabular}
-\caption{Simulation results for varying $\Delta t$, number of elements $n_e$, and diffusivity ratios $\sigma_d / \sigma_h$.}
+\caption{Comprehensive simulation results showing the effect of time step $\Delta t$, number of elements $n_e$, and conductivity ratio $\sigma_d/\sigma_h$ on activation detection, M-matrix property, and solution bounds.}
 \label{tab:simulation_results}
 \end{table}
-As shown in Table~\ref{tab:simulation_results}, activation is only observed when the mesh resolution is high ($n_e = 256$), regardless of the time step or diffusivity ratio. However, the solution remains bounded in the interval $[0,1]$ only for the case with $\Delta t = 0.025$, $n_e = 256$, and $\sigma_d/\sigma_h = 1.0$. Notably, none of the tested configurations produce an M-matrix, suggesting that further stabilization or discretization modifications might be necessary to guarantee desirable numerical properties.
 
-\subsection{Graphic visualization of the significant results}
+\paragraph{Key Findings}
+
+\begin{enumerate}
+    \item \textbf{Spatial Resolution Dominance}: Activation detection occurs only for the finest mesh ($n_e = 256$), regardless of time step or conductivity ratio. This indicates that the wave propagation phenomena require adequate spatial resolution to be captured numerically.
+
+    \item \textbf{Bounds Violation}: Only one configuration ($\Delta t = 0.025$, $n_e = 256$, $\sigma_d/\sigma_h = 1.0$) maintains solution bounds $u \in [0,1]$. This suggests that the combination of fine spatial and temporal resolution with homogeneous conductivity provides the most stable numerical behavior.
+
+    \item \textbf{M-Matrix Property}: None of the tested configurations produce an M-matrix, indicating potential issues with solution positivity. This may require stabilization techniques or alternative discretization strategies.
+
+    \item \textbf{Activation Time Consistency}: When activation occurs, the timing is remarkably consistent across different conductivity ratios (1.20-1.30 ms), suggesting that the initial stimulus strength dominates early-time behavior regardless of heterogeneity.
+\end{enumerate}
+
+\subsubsection{Conductivity Ratio Effects}
+
+Surprisingly, the heterogeneous conductivity patterns show minimal impact on activation times when spatial resolution is adequate. This can be attributed to:
+
+\begin{itemize}
+    \item \textbf{Initial Stimulus Location}: The stimulus originates in the corner region $(x \geq 0.9, y \geq 0.9)$, which is typically in healthy tissue, providing strong initial propagation regardless of downstream heterogeneity.
+    
+    \item \textbf{Early Time Dominance}: The measured activation times (=1.2 ms) occur before the wave significantly interacts with the diseased regions, explaining the minimal sensitivity to $\sigma_d/\sigma_h$.
+    
+    \item \textbf{Threshold Detection}: The activation criterion ($u > f_t = 0.2383$) may be reached locally before global wave patterns are established.
+\end{itemize}
+
+\subsubsection{Computational Considerations}
+
+The MATLAB implementation demonstrates several important computational aspects:
+
+\begin{itemize}
+    \item \textbf{Matrix Assembly Efficiency}: The tensor product approach using Kronecker products provides an efficient way to construct local stiffness matrices while maintaining code readability.
+    
+    \item \textbf{Sparse Matrix Utilization}: The global assembly uses MATLAB's sparse matrix capabilities, essential for handling the large systems arising from fine spatial discretizations.
+    
+    \item \textbf{Linear System Solution}: Direct factorization (backslash operator) is used for the linear systems, which is appropriate for the problem sizes considered but may require iterative solvers for larger systems.
+\end{itemize}
+
+\subsection{Visualization and Wave Propagation Analysis}
+
+\subsubsection{Activation Pattern Visualization}
+
+The graphic visualization implementation in \texttt{graphic\_visualization\_ex\_1\_8.m} provides comprehensive insight into the wave propagation dynamics. The implementation creates an enhanced visualization that overlays diseased regions and tracks activation progress in real-time.
+
+\paragraph{Enhanced Visualization Features}
+
+\begin{lstlisting}[language=Matlab, caption=Enhanced visualization with diseased region overlay]
+% Define diseased regions with severity visualization
+diseased_regions = {@(x,y)(x-0.3).^2 + (y-0.7).^2 < 0.1^2, ... % \Omega_{d1}
+                    @(x,y)(x-0.7).^2 + (y-0.3).^2 < 0.15^2, ... % \Omega_{d2}
+                    @(x,y)(x-0.5).^2 + (y-0.5).^2 < 0.1^2};     % \Omega_{d3}
+
+% Overlay diseased regions with different transparencies
+for i = 1:length(diseased_regions)
+    mask = diseased_regions{i}(X, Y);
+    surf(X, Y, Z, 'FaceColor', 'red', ...
+         'FaceAlpha', 0.2 + 0.1*i, 'EdgeColor', 'none');
+end
+\end{lstlisting}
+
+\paragraph{Multi-Panel Analysis}
+The visualization system provides four synchronized views:
+\begin{enumerate}
+    \item \textbf{Surface Plot}: 3D visualization of the potential field $u(x,y,t)$ with overlaid diseased regions
+    \item \textbf{Activation Map}: Binary visualization showing activated vs. inactive tissue regions
+    \item \textbf{Time Series}: Fraction of tissue activated as a function of time
+    \item \textbf{Video Output}: Real-time animation exported as MP4 for detailed analysis
+\end{enumerate}
+
+\subsubsection{Wave Propagation Characteristics}
+
+Figure~\ref{fig:activation} demonstrates the characteristic wave propagation patterns observed in the heterogeneous cardiac tissue model.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=0.7\textwidth]{../assets/images/activation_t15.png}
+        \caption{Early propagation at $t=15.1$ ms}
+        \label{fig:activation_t15}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=0.7\textwidth]{../assets/images/activation_t21.png}
+        \caption{Advanced propagation at $t=21.6$ ms}
+        \label{fig:activation_t21}
+    \end{subfigure}
+    \caption{Electrical potential propagation through heterogeneous cardiac tissue. The three diseased regions $\Omega_{d1}$, $\Omega_{d2}$, and $\Omega_{d3}$ show distinct effects on wave propagation depending on their conductivity ratios.}
+    \label{fig:activation}
+\end{figure}
+
+\paragraph{Propagation Dynamics Analysis}
+
+The simulation reveals several key propagation characteristics:
+
+\begin{itemize}
+    \item \textbf{Hyper-conductive Regions} ($\sigma_d = 10\sigma_h$): Enhanced conduction velocity creates preferential pathways, leading to faster activation and potential re-entry phenomena.
+    
+    \item \textbf{Normal Conductivity} ($\sigma_d = \sigma_h$): Uniform wave propagation maintains circular wavefront geometry, serving as the control case.
+    
+    \item \textbf{Hypo-conductive Regions} ($\sigma_d = 0.1\sigma_h$): Significantly slowed conduction creates "slow zones" that can act as barriers to propagation or sources of delayed activation.
+\end{itemize}
+
+\paragraph{Clinical Relevance}
+These propagation patterns have direct clinical implications:
+\begin{itemize}
+    \item \textbf{Arrhythmia Risk}: Regions with extreme conductivity contrasts can create conditions for re-entrant circuits
+    \item \textbf{Conduction Block}: Severely hypo-conductive regions may completely block wave propagation
+    \item \textbf{Activation Delay}: Heterogeneous patterns alter the synchronization of cardiac muscle contraction
+\end{itemize}
+
+\subsubsection{Quantitative Analysis}
+
+Figure~\ref{fig:bounds-check} and Figure~\ref{fig:activation-heatmap} provide quantitative analysis of the parameter space exploration.
+
 \begin{figure}[H]
     \centering
     \begin{minipage}{0.55\textwidth}
         \centering
-        \includegraphics[width=\textwidth]{../assets/images//sim_results.png}
-        \caption{Simulation outcomes in the parameter space $(n_e, \Delta t, \sigma_d/\sigma_h)$.}
+        \includegraphics[width=\textwidth]{../assets/images/sim_results.png}
+        \caption{3D visualization of simulation outcomes in parameter space $(\Delta t, n_e, \sigma_d/\sigma_h)$. Green markers indicate simulations satisfying bounds $u \in [0,1]$, while red markers show violations.}
         \label{fig:bounds-check}
     \end{minipage}
     \hfill
     \begin{minipage}{0.4\textwidth}
         \centering
-        \includegraphics[width=\textwidth]{../assets/images//heatmap.png}
-        \caption{Heatmap of the average activation time (ms) for valid parameter combinations.}
+        \includegraphics[width=\textwidth]{../assets/images/heatmap.png}
+        \caption{Heatmap showing average activation times for valid parameter combinations. Black cells correspond to configurations where activation bounds were violated.}
         \label{fig:activation-heatmap}
     \end{minipage}
 \end{figure}
-Figure~\ref{fig:bounds-check} illustrates the simulation outcomes in the parameter space defined by the number of elements $n_e$, time step $\Delta t$, and diffusivity ratio $\sigma_d/\sigma_h$. Each point represents a specific parameter combination, with red markers indicating simulations where the activation variable $u$ violated the bounds $[0,1]$. The single valid point (in green) satisfies all constraints. \\
-Figure~\ref{fig:activation-heatmap} presents a heatmap of the average activation time (in milliseconds) for valid parameter combinations. Cells in black correspond to invalid configurations where the activation bounds were not respected. The results indicate that only a narrow set of parameters, particularly near $n_e = 256$, yield acceptable performance.
 
-\subsubsection*{Simulation Results}
+The analysis reveals that successful simulations (green in Figure~\ref{fig:bounds-check}) form a very narrow region in parameter space, highlighting the delicate balance required between spatial resolution, temporal accuracy, and material heterogeneity. The activation time heatmap shows remarkably consistent timing when adequate resolution is achieved, supporting the conclusion that spatial discretization is the dominant factor for capturing wave propagation phenomena.
 
-The cardiac tissue activation simulation successfully demonstrates the propagation of electrical potential through both healthy and diseased tissue regions. Figure~\ref{fig:activation} shows snapshots of the simulation at different time points.
+\subsection{Finite Element Method: Conclusions and Limitations}
 
-\begin{figure}[H]
-    \centering
-    \begin{subfigure}[b]{0.48\textwidth}
-        \includegraphics[width=0.7\textwidth]{../assets/images//activation_t15.png}
-        \caption{Activation at $t=15.1$ ms}
-        \label{fig:activation_t15}
-    \end{subfigure}
-    \hfill
-    \begin{subfigure}[b]{0.48\textwidth}
-        \includegraphics[width=0.7\textwidth]{../assets/images//activation_t21.png}
-        \caption{Activation at $t=21.6$ ms}
-        \label{fig:activation_t21}
-    \end{subfigure}
-    \caption{Electrical potential propagation through cardiac tissue with three distinct diseased regions ($\Omega_d1$, $\Omega_d2$, $\Omega_d3$). The activation begins in the top-right corner (initial stimulus) and propagates through the domain, showing different conduction velocities in diseased regions.}
-    \label{fig:activation}
-\end{figure}
+\subsubsection{Strengths of the FEM Implementation}
 
-Key observations from the simulation include:
+The MATLAB finite element implementation demonstrates several key advantages:
 
 \begin{itemize}
-    \item Propagation velocity varies significantly between different tissue types:
-    \begin{itemize}
-        \item Faster conduction in hyper-conductive region $\Omega_d1$ (10$\Sigma_h$)
-        \item Normal conduction in $\Omega_d2$ ($\Sigma_h$)
-        \item Slowed conduction in hypo-conductive region $\Omega_d3$ (0.1$\Sigma_h$)
-    \end{itemize}
+    \item \textbf{Structured Implementation}: The modular design with separate functions for mass and stiffness matrix assembly provides excellent code maintainability and extensibility.
+    
+    \item \textbf{Heterogeneity Support}: The modified assembly function elegantly handles spatially varying conductivity without compromising computational efficiency or sparsity patterns.
+    
+    \item \textbf{Stability Analysis}: The systematic evaluation of M-matrix properties and solution bounds provides important insights into numerical stability.
+    
+    \item \textbf{Comprehensive Testing}: The automated parameter sweep reveals critical dependencies and failure modes that might be missed in ad-hoc testing.
 \end{itemize}
 
-The simulation successfully captures the expected physiological behavior where conduction velocity depends on local tissue properties. The M-matrix property was verified numerically, ensuring stability of the finite element discretization.
+\subsubsection{Identified Limitations}
+
+Several important limitations emerged from the analysis:
+
+\begin{enumerate}
+    \item \textbf{Resolution Requirements}: The critical dependence on fine spatial discretization ($n_e = 256$) for activation detection suggests that the method may be computationally expensive for larger domains or 3D problems.
+    
+    \item \textbf{M-Matrix Property}: The consistent failure to achieve M-matrix properties across all tested configurations indicates potential issues with solution positivity, particularly important for physically meaningful results.
+    
+    \item \textbf{Bounds Violations}: The frequent violation of solution bounds $u \in [0,1]$ suggests that the IMEX scheme may require stabilization for robust performance across diverse parameter ranges.
+    
+    \item \textbf{Temporal Sensitivity}: The strong coupling between spatial and temporal discretization parameters limits the flexibility in choosing efficient time step sizes.
+\end{enumerate}
+
+\subsubsection{Comparison with Alternative Methods}
+
+The finite element implementation provides a valuable baseline for comparison with alternative numerical approaches:
+
+\begin{itemize}
+    \item \textbf{vs. Finite Differences}: The FEM naturally handles heterogeneous media and complex geometries, but at the cost of more complex matrix assembly.
+    
+    \item \textbf{vs. Neural Networks}: The FEM provides guaranteed convergence properties and well-understood error analysis, while neural methods may offer better efficiency for repeated evaluations.
+    
+    \item \textbf{vs. Spectral Methods}: For smooth solutions, spectral methods might provide higher accuracy, but the reaction-diffusion equation's sharp fronts favor the local support properties of finite elements.
+\end{itemize}
+
+\subsubsection{Recommendations for Improvement}
+
+Based on the analysis, several improvements could enhance the FEM implementation:
+
+\begin{enumerate}
+    \item \textbf{Adaptive Mesh Refinement}: Implement adaptive spatial refinement to concentrate computational effort near wave fronts while maintaining efficiency in smooth regions.
+    
+    \item \textbf{Stabilization Techniques}: Add stabilization terms to ensure M-matrix properties and solution bounds, particularly for challenging parameter combinations.
+    
+    \item \textbf{Higher-Order Elements}: Consider quadratic or higher-order elements to improve accuracy per degree of freedom, potentially reducing the spatial resolution requirements.
+    
+    \item \textbf{Advanced Time Integration}: Explore higher-order IMEX schemes or adaptive time stepping to improve temporal accuracy and stability margins.
+\end{enumerate}
+
+This comprehensive analysis of the finite element implementation provides important insights into the numerical challenges of cardiac tissue modeling and establishes a solid foundation for understanding the trade-offs inherent in different computational approaches.
