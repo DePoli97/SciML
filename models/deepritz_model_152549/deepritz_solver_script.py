@@ -21,7 +21,7 @@ class DeepRitzSolver(nn.Module):
     Risolve l'equazione del monodominio usando il metodo DeepRitz.
     Utilizza la formulazione variazionale (forma debole) invece della forma forte della PDE.
     """
-    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 128, 128, 128, 128, 128, 1]):
+    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 128, 128, 128, 128, 1]):
         super(DeepRitzSolver, self).__init__()
         
         self.device = device if device is not None else torch.device('cpu')
@@ -52,9 +52,9 @@ class DeepRitzSolver(nn.Module):
         self.fd = fd
         
         # Pesi della loss ribilanciati per dare più importanza alla PDE
-        self.pde_weight = 100.0  # Aumentato drasticamente
-        self.ic_weight = 20.0   # Ridotto per bilanciare
-        self.bc_weight = 20.0   # Ridotto per bilanciare
+        self.pde_weight = 20.0
+        self.ic_weight = 40.0
+        self.bc_weight = 10.0
 
     def init_weights(self):
         for layer in self.layers:
@@ -113,13 +113,10 @@ class DeepRitzSolver(nn.Module):
         t_ic = torch.full_like(x, t0)
         u_pred = self(x, y, t_ic)
         
-        # Condizione iniziale: impulso Gaussiano centrato in (0.9, 0.9)
-        # per rendere la condizione più "morbida" e facile da imparare.
-        x0, y0 = 0.9, 0.9
-        sigma = 0.05  # Deviazione standard della Gaussiana
-        
-        # Calcolo della Gaussiana 2D
-        u_true = torch.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
+        # Condizione iniziale: impulso nel corner (0.9, 0.9)
+        u_true = torch.zeros_like(u_pred)
+        mask = (x >= 0.9) & (y >= 0.9)
+        u_true[mask] = 1.0
         
         return torch.mean((u_pred - u_true)**2)
 

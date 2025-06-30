@@ -27,7 +27,7 @@ FD = 1.0 # Forza di stimolo spaziale
 # Parametri di simulazione
 T = 35.0
 DT = 0.1
-NVX = NVY = 101
+NVX = NVY = 128
 
 # Casi predefiniti
 CASE_NORMAL = "Normal_Diffusivity_1x"
@@ -533,15 +533,32 @@ def train_deepritz_model(model_name=None):
     Addestra il modello DeepRitz e salva modello, grafico delle loss e script in una cartella dedicata.
     
     Args:
-        model_name (str, optional): Nome del modello da usare. Se None, verrà generato automaticamente.
+        model_name (str, optional): Nome del modello da usare. Se None, verrà generato automaticamente o caricato l'ultimo disponibile.
     """
-    # Crea il nome del modello se non specificato
-    if model_name is None:
-        timestamp = time.strftime("%H%M%S")
-        model_name = f"deepritz_model_{timestamp}"
-    
-    # Crea directory per il modello specifico
     models_base_dir = 'models'
+
+    # Logica per decidere se continuare un training o iniziarne uno nuovo
+    if model_name is None:
+        # Cerca l'ultimo modello disponibile per continuare il training
+        if os.path.exists(models_base_dir):
+            available_models = [d for d in os.listdir(models_base_dir) 
+                              if os.path.isdir(os.path.join(models_base_dir, d)) and d.startswith('deepritz_model_')]
+            if available_models:
+                available_models.sort(reverse=True)
+                model_name = available_models[0]
+                print(f"Nessun modello specificato. Continuo il training dall'ultimo modello trovato: {model_name}")
+            else:
+                # Nessun modello trovato, ne crea uno nuovo
+                timestamp = time.strftime("%H%M%S")
+                model_name = f"deepritz_model_{timestamp}"
+                print(f"Nessun modello DeepRitz trovato. Creazione di un nuovo modello: {model_name}")
+        else:
+            # La directory models non esiste, ne crea uno nuovo
+            timestamp = time.strftime("%H%M%S")
+            model_name = f"deepritz_model_{timestamp}"
+            print(f"Directory 'models' non trovata. Creazione di un nuovo modello: {model_name}")
+
+    # Crea directory per il modello specifico (se non esiste già)
     model_dir = os.path.join(models_base_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
     
@@ -554,8 +571,6 @@ def train_deepritz_model(model_name=None):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     # Costruiamo il percorso relativo al file deepritz_solver.py
     deepritz_script_path = os.path.join(current_dir, 'deepritz_solver.py')
-    
-    import shutil
     shutil.copy2(deepritz_script_path, script_copy_path)
     print(f"Script DeepRitz salvato in: {script_copy_path}")
     
@@ -569,10 +584,17 @@ def train_deepritz_model(model_name=None):
         fd=FD
     ).to(DEEPRITZ_DEVICE)
     
+    # Se stiamo continuando un training, carichiamo i pesi
+    if model_name and os.path.exists(model_path):
+        print(f"Caricamento del modello esistente da: {model_path} per continuare il training.")
+        deepritz.load_state_dict(torch.load(model_path, map_location=DEEPRITZ_DEVICE))
+        print("Pesi del modello caricati con successo.")
+
     trainer = DeepRitzTrainer(deepritz, device=DEEPRITZ_DEVICE)
     
-    # Addestra il modello
-    trainer.train(epochs=10000, lr=5e-4, n_domain=4000, n_boundary=800, n_initial=800, T=T)
+    # Addestra il modello con parametri più aggressivi per il fine-tuning
+    print("Avvio di una sessione di training estesa per il fine-tuning...")
+    trainer.train(epochs=10000, lr=1e-5, n_domain=8000, n_boundary=1600, n_initial=1600, T=T)
     
     # Salva il modello usando il trainer
     trainer.save_model(model_dir)
