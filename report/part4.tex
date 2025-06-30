@@ -1,0 +1,58 @@
+\section{Comparison}
+\subsection{Accuracy Assessment}
+
+Both methods achieve comparable accuracy levels in the range of $10^{-3}$ for the L$^2$ error norm. The FEM implementation with the finest mesh (256 elements) achieved an L$^2$ error of $6.2 \times 10^{-4}$, while the optimized DeepRitz model reached $1.8 \times 10^{-3}$. However, the convergence characteristics differ significantly between the two approaches.
+
+\paragraph{Convergence Behavior}
+The FEM demonstrates predictable algebraic convergence with mesh refinement, following the expected $h^p$ convergence rate for polynomial degree $p$. In contrast, DeepRitz exhibits potentially exponential convergence for smooth solutions, though this is highly dependent on the network architecture and training methodology.
+
+\subsection{Computational Efficiency}
+
+The computational cost analysis reveals distinct trade-offs between the two methods:
+
+\paragraph{Time-to-Solution Analysis}
+\begin{itemize}
+    \item \textbf{FEM}: Direct solution times range from 0.05 to 1.20 seconds depending on mesh resolution
+    \item \textbf{DeepRitz}: Training times of 95-119 seconds, but inference time of only 3ms per evaluation
+\end{itemize}
+
+\paragraph{Memory Requirements}
+Memory usage comparison shows:
+\begin{itemize}
+    \item \textbf{FEM}: 2.1-33.2 MB scaling with mesh resolution
+    \item \textbf{DeepRitz}: Approximately 42-45 MB regardless of domain discretization
+    \item DeepRitz uses roughly 1.3× more memory than the finest FEM mesh
+\end{itemize}
+
+\subsection{Practical Considerations}
+
+\paragraph{Problem Setup and Flexibility}
+FEM requires mesh generation and careful handling of boundary conditions, while DeepRitz needs network architecture design and hyperparameter tuning. The FEM provides guaranteed satisfaction of essential boundary conditions, whereas DeepRitz enforces constraints through penalty methods.
+
+\paragraph{Scalability Analysis}
+For problems requiring multiple solution evaluations (parameter studies, optimization), DeepRitz becomes advantageous after the initial training investment. The method shows promise for higher-dimensional problems where FEM suffers from the curse of dimensionality.
+
+\paragraph{Reliability and Validation}
+FEM offers well-established error estimation and convergence guarantees. DeepRitz, while promising, requires careful validation and may exhibit sensitivity to initialization and training procedures.
+
+\subsection{Method Selection Guidelines}
+
+Based on the comparative analysis, the following guidelines emerge:
+
+\begin{itemize}
+    \item \textbf{Single solve problems}: FEM is preferred due to lower computational overhead
+    \item \textbf{Multiple evaluations}: DeepRitz becomes competitive after 250+ solution queries
+    \item \textbf{Parameter studies}: DeepRitz with transfer learning shows significant advantages
+    \item \textbf{High-dimensional problems}: DeepRitz demonstrates better scalability properties
+    \item \textbf{Guaranteed accuracy requirements}: FEM provides more reliable error bounds
+\end{itemize}
+
+\subsubsection{Future Directions}
+
+The comparison suggests several avenues for improvement:
+\begin{itemize}
+    \item Hybrid approaches combining FEM coarse solutions with DeepRitz refinement
+    \item Advanced training strategies to reduce DeepRitz convergence time
+    \item Adaptive mesh refinement for FEM to compete with DeepRitz flexibility
+    \item Physics-informed transfer learning to reduce training overhead
+\end{itemize}
