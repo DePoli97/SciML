@@ -35,30 +35,6 @@ This new architecture, composed of 5 hidden layers with 128 neurons each, allowe
 
 We maintained \texttt{tanh} as the activation function after experiments with \texttt{swish}, \texttt{ReLU}, and custom activations, as it ensured the necessary regularity in the solution and facilitated the calculation of higher-order derivatives.
 
-\subsection{Initial Condition Revision}
-
-A significant discovery was the impact of the initial condition's shape on the model's learning capability. The original step initial condition proved difficult for the neural network to learn due to its discontinuities.
-
-\subsubsection{From Step Function to Gaussian Pulse}
-
-We replaced the step initial condition with a centered Gaussian pulse:
-\begin{lstlisting}[language=Python]
-# Initial condition: Gaussian pulse centered at (0.9, 0.9)
-x0, y0 = 0.9, 0.9
-sigma = 0.05  # Standard deviation of the Gaussian
-u_true = torch.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
-\end{lstlisting}
-
-This change produced numerous benefits:
-\begin{itemize}
-    \item Initial condition differentiable everywhere
-    \item Easier for the neural network to learn
-    \item Better physical representation of a localized impulse
-    \item Significant reduction in initial condition error
-\end{itemize}
-
-The transition to the Gaussian initial condition reduced the loss component related to the initial condition by 78\% in the first 1000 training cycles, highlighting the importance of regularity for neural networks.
-
 \subsection{Loss Weight Balancing}
 
 A crucial aspect in optimizing the DeepRitz model was rebalancing the weights assigned to the different components of the loss function. The original formulation assigned equal weights to the terms related to the differential equation (PDE), initial conditions (IC), and boundary conditions (BC).
@@ -188,7 +164,7 @@ This normalization ensured that all input variables ($x$, $y$ and $t$) were mapp
 
 The fine-tuning process led to substantial and measurable improvements in solution quality. Here we present the evolution of performance through the main optimization phases.
 
-\subsubsection{Loss Progression}
+\subsubsection*{Loss Progression}
 
 The total loss function trend was our main indicator of improvement:
 \begin{itemize}
@@ -202,7 +178,7 @@ The total loss function trend was our main indicator of improvement:
 
 It's important to note that the final loss obtained with point regeneration represents a qualitatively superior result compared to a slightly lower loss calculated on the same points, as it indicates better generalization.
 
-\subsubsection{Wave Propagation Quality}
+\subsubsection*{Wave Propagation Quality}
 
 The most significant improvement was in the quality of cardiac wave propagation:
 \begin{itemize}
@@ -212,51 +188,3 @@ The most significant improvement was in the quality of cardiac wave propagation:
 \end{itemize}
 
 The final solution clearly shows the influence of regions with altered diffusivity, corresponding to diseased cardiac tissues, on impulse propagation.
-
-\subsection{Comparison with FEM and Alternative Approaches}
-
-We compared the results of our optimized DeepRitz model with those obtained through:
-\begin{itemize}
-    \item Finite Element Method (FEM)
-    \item Traditional PINN neural networks
-    \item Supervised CNN approach
-\end{itemize}
-
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.8\textwidth]{assets/images/sim_results.png}
-%     \caption{Comparison of solutions for $t=20$ obtained with different methods}
-%     \label{fig:sim_comparison}
-% \end{figure}
-
-The optimized DeepRitz model demonstrated:
-\begin{itemize}
-    \item Greater regularity compared to the FEM solution
-    \item Better reproduction of the interface between regions of different diffusivity compared to PINNs
-    \item Ability to generalize to physical parameters not seen during training, unlike CNNs
-\end{itemize}
-
-\subsection{Lessons Learned and Conclusions}
-
-Our fine-tuning process of the DeepRitz model highlighted several key principles:
-
-\begin{itemize}
-    \item \textbf{The importance of regularity}: Replacing the step initial condition with a Gaussian showed how crucial it is to have regular functions for neural network training.
-    
-    \item \textbf{Balancing loss components}: Assigning appropriate weights to the different components of the objective function is essential to guide learning toward physically accurate solutions.
-    
-    \item \textbf{Generalization through dynamic sampling}: Regenerating collocation points at each epoch was crucial for obtaining a robust model that generalizes well across the entire domain.
-    
-    \item \textbf{Continuity in the optimization process}: The implementation of a complete checkpointing system enabled incremental training sessions without loss of information.
-    
-    \item \textbf{The need for representational capacity}: A sufficiently deep and wide architecture proved indispensable for capturing the complex spatiotemporal dynamics of the monodomain equation.
-\end{itemize}
-
-In conclusion, our work has demonstrated that, through a systematic optimization process, neural network-based methods like DeepRitz can produce solutions competitive with traditional numerical methods for complex problems such as the monodomain equation, while offering greater flexibility and adaptability to different physical conditions.
-
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.8\textwidth]{assets/images/activation_t21.png}
-%     \caption{Cardiac wave propagation at time $t=21$ with the optimized DeepRitz model, clearly showing the influence of regions with different diffusivity}
-%     \label{fig:wave_propagation}
-% \end{figure}

@@ -30,8 +30,8 @@ class DeepRitzSolver(nn.Module):
         for i in range(len(layers)-1):
             self.layers.append(nn.Linear(layers[i], layers[i+1]))
             if i < len(layers)-2:
-                # Usiamo un'attivazione standard e più robusta
-                self.layers.append(nn.Tanh())
+                # Usiamo un'attivazione custom
+                self.layers.append(CustomActivation())
         
         # Aggiunta opzioni per normalizzazione dell'input
         self.input_normalization = True
