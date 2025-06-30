@@ -253,7 +253,7 @@ class DeepRitzTrainer:
             'initial': (x_initial, y_initial)
         }
     
-    def train(self, epochs=10000, lr=1e-3, n_domain=2000, n_boundary=400, n_initial=400, T=35.0):
+    def train(self, epochs=10000, lr=1e-3, n_domain=2000, n_boundary=400, n_initial=400, T=35.0, regenerate_points_per_epoch=False):
         """
         Addestra il modello DeepRitz.
         
@@ -264,6 +264,7 @@ class DeepRitzTrainer:
             n_boundary (int): Numero di punti sui bordi.
             n_initial (int): Numero di punti per la condizione iniziale.
             T (float): Tempo finale.
+            regenerate_points_per_epoch (bool): Se True, rigenera i punti ad ogni epoca.
         """
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
         # Scheduler più aggressivo per stabilizzare il training
@@ -272,11 +273,18 @@ class DeepRitzTrainer:
         print(f"Inizio addestramento DeepRitz per {epochs} epoche...")
         start_time = time.time()
         
-        # Genera dati fissi per ridurre l'oscillazione
-        print("Generazione dati di training fissi...")
-        data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
+        if not regenerate_points_per_epoch:
+            # Genera dati fissi per ridurre l'oscillazione
+            print("Generazione dati di training fissi...")
+            data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
         
         for epoch in range(epochs):
+            if regenerate_points_per_epoch:
+                # Rigenera i dati ad ogni epoca
+                if epoch > 0 and epoch % 250 == 0:
+                    print(f"Epoca {epoch}/{epochs} - Rigenerazione punti di training...")
+                data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
+
             # Zero gradients
             optimizer.zero_grad()
             
@@ -291,7 +299,10 @@ class DeepRitzTrainer:
                          self.model.bc_weight * bc_loss)
             
             # Backpropagation
-            total_loss.backward(retain_graph=True)
+            if regenerate_points_per_epoch:
+                total_loss.backward()  # Non serve retain_graph se si rigenera
+            else:
+                total_loss.backward(retain_graph=True)
             
             # Gradient clipping per stabilità
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
