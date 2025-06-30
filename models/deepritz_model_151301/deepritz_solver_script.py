@@ -21,17 +21,17 @@ class DeepRitzSolver(nn.Module):
     Risolve l'equazione del monodominio usando il metodo DeepRitz.
     Utilizza la formulazione variazionale (forma debole) invece della forma forte della PDE.
     """
-    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 128, 128, 128, 128, 128, 1]):
+    def __init__(self, device, sigma_h, a, fr, ft, fd, layers=[3, 64, 64, 64, 1]):
         super(DeepRitzSolver, self).__init__()
         
         self.device = device if device is not None else torch.device('cpu')
         self.layers = nn.ModuleList()
+        self.activations = nn.ModuleList()
         
         for i in range(len(layers)-1):
             self.layers.append(nn.Linear(layers[i], layers[i+1]))
             if i < len(layers)-2:
-                # Usiamo un'attivazione standard e più robusta
-                self.layers.append(nn.Tanh())
+                self.activations.append(CustomActivation())
         
         # Aggiunta opzioni per normalizzazione dell'input
         self.input_normalization = True
@@ -51,10 +51,10 @@ class DeepRitzSolver(nn.Module):
         self.ft = ft
         self.fd = fd
         
-        # Pesi della loss ribilanciati per dare più importanza alla PDE
-        self.pde_weight = 100.0  # Aumentato drasticamente
-        self.ic_weight = 20.0   # Ridotto per bilanciare
-        self.bc_weight = 20.0   # Ridotto per bilanciare
+        # Pesi adattivi per la loss - più bilanciati
+        self.pde_weight = 10.0     # Aumentato per enfatizzare la fisica
+        self.ic_weight = 50.0      # Ridotto da 100 per evitare dominanza
+        self.bc_weight = 5.0       # Ridotto leggermente
 
     def init_weights(self):
         for layer in self.layers:
@@ -66,8 +66,8 @@ class DeepRitzSolver(nn.Module):
     def forward(self, x, y, t):
         x, y, t = self.normalize_input(x, y, t)
         inputs = torch.cat([x, y, t], dim=1)
-        for layer in self.layers[:-1]:
-            inputs = layer(inputs)
+        for i, layer in enumerate(self.layers[:-1]):
+            inputs = self.activations[i](layer(inputs))
         output = self.layers[-1](inputs)
         return output
 
@@ -113,13 +113,10 @@ class DeepRitzSolver(nn.Module):
         t_ic = torch.full_like(x, t0)
         u_pred = self(x, y, t_ic)
         
-        # Condizione iniziale: impulso Gaussiano centrato in (0.9, 0.9)
-        # per rendere la condizione più "morbida" e facile da imparare.
-        x0, y0 = 0.9, 0.9
-        sigma = 0.05  # Deviazione standard della Gaussiana
-        
-        # Calcolo della Gaussiana 2D
-        u_true = torch.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
+        # Condizione iniziale: impulso nel corner (0.9, 0.9)
+        u_true = torch.zeros_like(u_pred)
+        mask = (x >= 0.9) & (y >= 0.9)
+        u_true[mask] = 1.0
         
         return torch.mean((u_pred - u_true)**2)
 
@@ -253,7 +250,7 @@ class DeepRitzTrainer:
             'initial': (x_initial, y_initial)
         }
     
-    def train(self, epochs=10000, lr=1e-3, n_domain=2000, n_boundary=400, n_initial=400, T=35.0, regenerate_points_per_epoch=False):
+    def train(self, epochs=10000, lr=1e-3, n_domain=2000, n_boundary=400, n_initial=400, T=35.0):
         """
         Addestra il modello DeepRitz.
         
@@ -264,7 +261,6 @@ class DeepRitzTrainer:
             n_boundary (int): Numero di punti sui bordi.
             n_initial (int): Numero di punti per la condizione iniziale.
             T (float): Tempo finale.
-            regenerate_points_per_epoch (bool): Se True, rigenera i punti ad ogni epoca.
         """
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
         # Scheduler più aggressivo per stabilizzare il training
@@ -273,18 +269,15 @@ class DeepRitzTrainer:
         print(f"Inizio addestramento DeepRitz per {epochs} epoche...")
         start_time = time.time()
         
-        if not regenerate_points_per_epoch:
-            # Genera dati fissi per ridurre l'oscillazione
-            print("Generazione dati di training fissi...")
-            data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
+        # Genera dati fissi per ridurre l'oscillazione
+        print("Generazione dati di training fissi...")
+        fixed_data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
         
         for epoch in range(epochs):
-            if regenerate_points_per_epoch:
-                # Rigenera i dati ad ogni epoca
-                if epoch > 0 and epoch % 250 == 0:
-                    print(f"Epoca {epoch}/{epochs} - Rigenerazione punti di training...")
+            # Rigenera i dati ogni 500 epoche per evitare problemi di autograd
+            if epoch % 500 == 0:
                 data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
-
+            
             # Zero gradients
             optimizer.zero_grad()
             
@@ -299,11 +292,8 @@ class DeepRitzTrainer:
                          self.model.bc_weight * bc_loss)
             
             # Backpropagation
-            if regenerate_points_per_epoch:
-                total_loss.backward()  # Non serve retain_graph se si rigenera
-            else:
-                total_loss.backward(retain_graph=True)
-            
+            total_loss.backward(retain_graph=True)
+
             # Gradient clipping per stabilità
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
