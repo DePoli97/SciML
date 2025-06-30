@@ -594,7 +594,7 @@ def train_deepritz_model(model_name=None):
     
     # Addestra il modello con parametri più aggressivi per il fine-tuning
     print("Avvio di una sessione di training estesa per il fine-tuning...")
-    trainer.train(epochs=10000, lr=1e-5, n_domain=8000, n_boundary=1600, n_initial=1600, T=T)
+    trainer.train(epochs=10000, lr=1e-6, n_domain=8000, n_boundary=1600, n_initial=1600, T=T)
     
     # Salva il modello usando il trainer
     trainer.save_model(model_dir)

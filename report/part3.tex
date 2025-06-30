@@ -1,87 +1,75 @@
-\section{Ottimizzazione del modello DeepRitz per l'equazione del monodominio}
+\section{DeepRitz Method Optimization for the Monodomain Equation}
 
-\subsection{Introduzione all'approccio DeepRitz}
+\subsection{Introduction to the DeepRitz Approach}
 
-Il metodo DeepRitz rappresenta un'evoluzione significativa nella risoluzione numerica di equazioni alle derivate parziali (PDE). A differenza delle reti neurali standard utilizzate nelle PINN (Physics-Informed Neural Networks), il metodo DeepRitz si basa sulla formulazione variazionale del problema, minimizzando direttamente il funzionale energetico associato all'equazione differenziale. Questo approccio presenta diversi vantaggi teorici, soprattutto per problemi con condizioni al contorno di Neumann, come nel nostro caso dell'equazione del monodominio per la propagazione degli impulsi cardiaci.
+The DeepRitz method represents a significant advancement in the numerical solution of partial differential equations (PDEs). Unlike standard neural networks used in PINNs (Physics-Informed Neural Networks), the DeepRitz method is based on the variational formulation of the problem, directly minimizing the energy functional associated with the differential equation. This approach offers several theoretical advantages, especially for problems with Neumann boundary conditions, as in our case of the monodomain equation for cardiac impulse propagation.
 
-\subsection{Architettura iniziale e limitazioni}
+\subsection{Initial Architecture and Challenges}
 
-La nostra implementazione iniziale del DeepRitz utilizzava:
-\begin{itemize}
-    \item Una rete neurale con tre livelli nascosti di dimensione 64
-    \item Funzioni di attivazione tanh
-    \item Learning rate iniziale di $10^{-3}$
-    \item 1000 punti di collocazione interni al dominio
-    \item 200 punti sul bordo
-    \item 200 punti per la condizione iniziale
-    \item Pesi bilanciati per le componenti della loss: PDE, condizioni iniziali e condizioni al bordo
-\end{itemize}
-
-I risultati iniziali, sebbene promettenti, hanno rivelato diverse problematiche:
+Our initial implementation faced several challenges:
 \begin{enumerate}
-    \item \textbf{Mancata propagazione dell'onda:} La soluzione tendeva a diffondersi uniformemente senza catturare la vera dinamica di propagazione dell'onda
-    \item \textbf{Over-fitting sui punti di training:} Il modello produceva buoni risultati solo nelle immediate vicinanze dei punti di collocazione
-    \item \textbf{Instabilità numerica:} La loss oscillava significativamente durante l'addestramento
-    \item \textbf{Difficoltà con le condizioni iniziali:} La rete faticava a riprodurre accuratamente la condizione iniziale a gradino
+    \item \textbf{Inadequate wave propagation:} The solution tended to diffuse uniformly without capturing the true dynamics of wave propagation
+    \item \textbf{Overfitting to training points:} The model performed well only in the vicinity of collocation points
+    \item \textbf{Difficulties with initial conditions:} The network struggled to accurately reproduce the step initial condition
 \end{enumerate}
 
-Queste osservazioni hanno guidato un processo di ottimizzazione sistematica che descriviamo nelle sezioni successive.
+These observations guided a systematic optimization process described in the following sections.
 
-\subsection{Ottimizzazione dell'architettura di rete}
+\subsection{Neural Network Architecture Optimization}
 
-La prima area di intervento è stata l'architettura della rete neurale. Dopo diverse sperimentazioni, abbiamo osservato che una rete più profonda e con maggiore capacità rappresentativa era essenziale per catturare le complesse dinamiche spazio-temporali del problema.
+The first area of intervention was the neural network architecture. After various experiments, we observed that a deeper network with greater representational capacity was essential to capture the complex spatiotemporal dynamics of the problem.
 
-\subsubsection{Incremento della profondità e capacità}
+\subsubsection{Increasing Depth and Capacity}
 
-Abbiamo progressivamente ampliato l'architettura fino a raggiungere la configurazione ottimale:
+We progressively expanded the architecture until reaching the optimal configuration:
 \begin{lstlisting}[language=Python]
 layers = [3, 128, 128, 128, 128, 128, 1]
 \end{lstlisting}
 
-Questa nuova architettura, composta da 5 strati nascosti con 128 neuroni ciascuno, ha permesso di:
+This new architecture, composed of 5 hidden layers with 128 neurons each, allowed us to:
 \begin{itemize}
-    \item Catturare dipendenze temporali complesse
-    \item Modellare i gradienti spaziali con maggiore precisione
-    \item Rappresentare efficacemente l'interazione tra termine di diffusione e termine di reazione
+    \item Capture complex temporal dependencies
+    \item Model spatial gradients with greater precision
+    \item Effectively represent the interaction between diffusion and reaction terms
 \end{itemize}
 
-La scelta delle funzioni di attivazione è stata mantenuta su \texttt{tanh} dopo esperimenti con \texttt{swish}, \texttt{ReLU} e attivazioni personalizzate, poiché garantiva la necessaria regolarità nella soluzione e facilitava il calcolo delle derivate di ordine superiore.
+We maintained \texttt{tanh} as the activation function after experiments with \texttt{swish}, \texttt{ReLU}, and custom activations, as it ensured the necessary regularity in the solution and facilitated the calculation of higher-order derivatives.
 
-\subsection{Revisione della condizione iniziale}
+\subsection{Initial Condition Revision}
 
-Una scoperta significativa è stata l'impatto della forma della condizione iniziale sulla capacità di apprendimento del modello. La condizione iniziale a gradino originale risultava difficile da apprendere per la rete neurale a causa delle sue discontinuità.
+A significant discovery was the impact of the initial condition's shape on the model's learning capability. The original step initial condition proved difficult for the neural network to learn due to its discontinuities.
 
-\subsubsection{Da gradino a funzione gaussiana}
+\subsubsection{From Step Function to Gaussian Pulse}
 
-Abbiamo sostituito la condizione iniziale a gradino con un impulso gaussiano centrato:
+We replaced the step initial condition with a centered Gaussian pulse:
 \begin{lstlisting}[language=Python]
-# Condizione iniziale: impulso Gaussiano centrato in (0.9, 0.9)
+# Initial condition: Gaussian pulse centered at (0.9, 0.9)
 x0, y0 = 0.9, 0.9
-sigma = 0.05  # Deviazione standard della Gaussiana
+sigma = 0.05  # Standard deviation of the Gaussian
 u_true = torch.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
 \end{lstlisting}
 
-Questo cambiamento ha prodotto numerosi benefici:
+This change produced numerous benefits:
 \begin{itemize}
-    \item Condizione iniziale differenziabile ovunque
-    \item Più facile da apprendere per la rete neurale
-    \item Migliore rappresentazione fisica di un impulso localizzato
-    \item Riduzione significativa dell'errore nella condizione iniziale
+    \item Initial condition differentiable everywhere
+    \item Easier for the neural network to learn
+    \item Better physical representation of a localized impulse
+    \item Significant reduction in initial condition error
 \end{itemize}
 
-Il passaggio alla condizione iniziale gaussiana ha ridotto la loss relativa alla condizione iniziale del 78\% nei primi 1000 cicli di addestramento, evidenziando l'importanza della regolarità per le reti neurali.
+The transition to the Gaussian initial condition reduced the loss component related to the initial condition by 78\% in the first 1000 training cycles, highlighting the importance of regularity for neural networks.
 
-\subsection{Bilanciamento dei pesi della loss}
+\subsection{Loss Weight Balancing}
 
-Un aspetto cruciale nell'ottimizzazione del modello DeepRitz è stato il ribilanciamento dei pesi assegnati alle diverse componenti della funzione di perdita. La formulazione originale assegnava pesi uguali ai termini relativi all'equazione differenziale (PDE), alle condizioni iniziali (IC) e alle condizioni al bordo (BC).
+A crucial aspect in optimizing the DeepRitz model was rebalancing the weights assigned to the different components of the loss function. The original formulation assigned equal weights to the terms related to the differential equation (PDE), initial conditions (IC), and boundary conditions (BC).
 
-\subsubsection{Analisi delle singole componenti}
+\subsubsection{Analysis of Individual Components}
 
-L'analisi dell'andamento delle singole componenti della loss durante l'addestramento ha rivelato uno squilibrio: il termine PDE decresceva molto più lentamente rispetto ai termini IC e BC. Questo significava che il modello stava apprendendo efficacemente a soddisfare le condizioni iniziali e al bordo, ma faticava a rispettare l'equazione differenziale nel dominio.
+Analysis of the individual loss components during training revealed an imbalance: the PDE term decreased much more slowly than the IC and BC terms. This meant that the model was effectively learning to satisfy the initial and boundary conditions, but struggling to respect the differential equation in the domain.
 
-\subsubsection{Riconfigurazione progressiva}
+\subsubsection{Progressive Reconfiguration}
 
-Attraverso esperimenti sistematici, abbiamo progressivamente ridefinito i pesi:
+Through systematic experiments, we progressively redefined the weights:
 \begin{lstlisting}[language=Python]
 # Loss weights rebalanced to give more importance to the PDE
 self.pde_weight = 100.0  # Increased drastically
@@ -89,72 +77,72 @@ self.ic_weight = 20.0    # Reduced for balance
 self.bc_weight = 20.0    # Reduced for balance
 \end{lstlisting}
 
-I nuovi valori sono stati determinati analizzando il contributo relativo di ciascun termine alla loss totale e cercando di equilibrare il gradiente che ciascuna componente apportava durante la backpropagation.
+The new values were determined by analyzing the relative contribution of each term to the total loss and trying to balance the gradient that each component contributed during backpropagation.
 
-Questo ribilanciamento ha migliorato significativamente la convergenza complessiva e la qualità della soluzione, poiché ha costretto la rete a dedicare maggiore attenzione alla dinamica fisica descritta dall'equazione differenziale.
+This rebalancing significantly improved overall convergence and solution quality, as it forced the network to pay greater attention to the physical dynamics described by the differential equation.
 
-\subsection{Strategie di campionamento avanzate}
+\subsection{Advanced Sampling Strategies}
 
-Un altro aspetto fondamentale del nostro processo di ottimizzazione è stato il miglioramento delle strategie di campionamento dei punti di collocazione.
+Another fundamental aspect of our optimization process was improving the sampling strategies for collocation points.
 
-\subsubsection{Incremento del numero di punti}
+\subsubsection{Increasing the Number of Points}
 
-Abbiamo progressivamente aumentato il numero di punti di collocazione:
+We progressively increased the number of collocation points:
 \begin{lstlisting}[language=Python]
-n_domain = 8000    # Punti nel dominio interno
-n_boundary = 1600  # Punti sul bordo
-n_initial = 1600   # Punti per la condizione iniziale
+n_domain = 8000    # Points in the interior domain
+n_boundary = 1600  # Points on the boundary
+n_initial = 1600   # Points for the initial condition
 \end{lstlisting}
 
-L'incremento ha permesso una migliore copertura del dominio spazio-temporale, riducendo il rischio di overfitting localizzato.
+This increase allowed for better coverage of the spatiotemporal domain, reducing the risk of localized overfitting.
 
-\subsubsection{Rigenerazione dei punti ad ogni epoca}
+\subsubsection{Point Regeneration at Each Epoch}
 
-La vera svolta è stata l'implementazione della rigenerazione dinamica dei punti di collocazione ad ogni epoca di training:
+The real breakthrough was the implementation of dynamic regeneration of collocation points at each training epoch:
 \begin{lstlisting}[language=Python]
 def train(..., regenerate_points_per_epoch=True):
     # ...
     for epoch in range(start_epoch, start_epoch + epochs):
         if regenerate_points_per_epoch:
-            # Rigenera i dati ad ogni epoca
+            # Regenerate data at each epoch
             data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
         # ...
 \end{lstlisting}
 
-Questa tecnica ha:
+This technique:
 \begin{itemize}
-    \item Migliorato drasticamente la generalizzazione del modello a tutto il dominio
-    \item Prevenuto l'overfitting sui punti fissi
-    \item Fornito una copertura più completa dello spazio delle soluzioni
-    \item Aumentato la robustezza del modello rispetto a scelte particolari di punti
+    \item Drastically improved the model's generalization to the entire domain
+    \item Prevented overfitting on fixed points
+    \item Provided more complete coverage of the solution space
+    \item Increased model robustness with respect to particular point choices
 \end{itemize}
 
-Sebbene questa strategia abbia rallentato leggermente il processo di addestramento, il beneficio in termini di qualità della soluzione è stato sostanziale.
+Although this strategy slightly slowed down the training process, the benefit in terms of solution quality was substantial.
 
-\subsection{Ottimizzazione dell'ottimizzatore}
+\subsection{Optimizer Optimization}
 
-La scelta dei parametri dell'ottimizzatore Adam e dello scheduler si è rivelata cruciale per gestire il complesso spazio dei parametri della rete neurale.
+The choice of parameters for the Adam optimizer and scheduler proved crucial for managing the complex parameter space of the neural network.
 
-\subsubsection{Learning rate e scheduler}
+\subsubsection{Learning Rate and Scheduler}
 
-Dopo numerosi esperimenti, abbiamo implementato una strategia di learning rate più conservativa:
+After numerous experiments, we implemented a more conservative learning rate strategy:
 \begin{lstlisting}[language=Python]
 optimizer = optim.Adam(self.model.parameters(), lr=5e-5)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.8)
 \end{lstlisting}
 
-La combinazione di un learning rate iniziale più basso ($5 \times 10^{-5}$ invece di $10^{-3}$) e uno scheduler che riduce ulteriormente il learning rate del 20\% ogni 1000 epoche ha garantito:
+The combination of a lower initial learning rate ($5 \times 10^{-5}$ instead of $10^{-3}$) and a scheduler that further reduces the learning rate by 20\% every 1000 epochs ensured:
 \begin{itemize}
-    \item Maggiore stabilità nell'addestramento
-    \item Evitato oscillazioni nella funzione di perdita
-    \item Permesso una convergenza più fine nelle fasi avanzate dell'addestramento
+    \item Greater stability in training
+    \item Avoided oscillations in the loss function
+    \item Allowed finer convergence in the advanced stages of training
 \end{itemize}
 
-\subsubsection{Implementazione di checkpointing completo}
+\subsubsection{Implementation of Complete Checkpointing}
 
-Un miglioramento tecnico fondamentale è stato l'implementazione di un sistema di checkpoint completo che salva e ripristina non solo i pesi della rete, ma anche lo stato dell'ottimizzatore:
+A fundamental technical improvement was the implementation of a complete checkpoint system that saves and restores not only the network weights, but also the optimizer state:
 \begin{lstlisting}[language=Python]
-# Salva il checkpoint completo
+# Save the complete checkpoint
 checkpoint = {
     'model_state_dict': self.model.state_dict(),
     'loss_history': self.loss_history,
@@ -174,17 +162,17 @@ checkpoint = {
 torch.save(checkpoint, checkpoint_path)
 \end{lstlisting}
 
-Questa tecnica ha permesso di:
+This technique allowed us to:
 \begin{itemize}
-    \item Riprendere l'addestramento esattamente dal punto in cui era stato interrotto
-    \item Preservare i momenti accumulati dall'ottimizzatore Adam
-    \item Evitare il fenomeno del "cold restart" che causava picchi di loss quando si riprendeva l'addestramento
-    \item Mantenere la continuità nella curva di apprendimento attraverso multiple sessioni
+    \item Resume training exactly from where it was interrupted
+    \item Preserve the moments accumulated by the Adam optimizer
+    \item Avoid the ``cold restart'' phenomenon that caused loss spikes when resuming training
+    \item Maintain continuity in the learning curve across multiple sessions
 \end{itemize}
 
-\subsection{Normalizzazione dell'input}
+\subsection{Input Normalization}
 
-La normalizzazione degli input è stata un'altra componente chiave della nostra ottimizzazione:
+Input normalization was another key component of our optimization:
 \begin{lstlisting}[language=Python]
 def normalize_input(self, x, y, t):
     if self.input_normalization:
@@ -194,81 +182,81 @@ def normalize_input(self, x, y, t):
     return x, y, t
 \end{lstlisting}
 
-Questa normalizzazione ha garantito che tutte le variabili di input ($x$, $y$ e $t$) fossero mappate nell'intervallo [-1, 1], migliorando significativamente la convergenza della rete neurale.
+This normalization ensured that all input variables ($x$, $y$ and $t$) were mapped to the range [-1, 1], significantly improving the convergence of the neural network.
 
-\subsection{Risultati progressivi ottenuti}
+\subsection{Progressive Results Obtained}
 
-Il processo di fine-tuning ha portato a miglioramenti sostanziali e misurabili nella qualità della soluzione. Presentiamo qui l'evoluzione delle prestazioni attraverso le fasi principali di ottimizzazione.
+The fine-tuning process led to substantial and measurable improvements in solution quality. Here we present the evolution of performance through the main optimization phases.
 
-\subsubsection{Andamento della loss}
+\subsubsection{Loss Progression}
 
-L'andamento della funzione di perdita totale è stato il nostro principale indicatore di miglioramento:
+The total loss function trend was our main indicator of improvement:
 \begin{itemize}
-    \item \textbf{Modello iniziale}: Loss finale $\approx 5 \times 10^{-2}$
-    \item \textbf{Dopo ottimizzazione architettura}: Loss $\approx 2 \times 10^{-2}$
-    \item \textbf{Dopo bilanciamento pesi}: Loss $\approx 1 \times 10^{-2}$
-    \item \textbf{Dopo condizione iniziale gaussiana}: Loss $\approx 5 \times 10^{-3}$
-    \item \textbf{Dopo rigenerazione punti}: Loss $\approx 5.3 \times 10^{-3}$ (su punti sempre diversi!)
-    \item \textbf{Dopo ottimizzazione completa}: Loss $< 5 \times 10^{-3}$
+    \item \textbf{Initial model}: Final loss $\approx 5 \times 10^{-2}$
+    \item \textbf{After architecture optimization}: Loss $\approx 2 \times 10^{-2}$
+    \item \textbf{After weight balancing}: Loss $\approx 1 \times 10^{-2}$
+    \item \textbf{After Gaussian initial condition}: Loss $\approx 5 \times 10^{-3}$
+    \item \textbf{After point regeneration}: Loss $\approx 5.3 \times 10^{-3}$ (on constantly varying points!)
+    \item \textbf{After complete optimization}: Loss $< 5 \times 10^{-3}$
 \end{itemize}
 
-È importante notare che la loss finale ottenuta con rigenerazione dei punti rappresenta un risultato qualitativamente superiore rispetto a una loss leggermente inferiore ma calcolata sempre sugli stessi punti, poiché indica una migliore generalizzazione.
+It's important to note that the final loss obtained with point regeneration represents a qualitatively superior result compared to a slightly lower loss calculated on the same points, as it indicates better generalization.
 
-\subsubsection{Qualità della propagazione dell'onda}
+\subsubsection{Wave Propagation Quality}
 
-Il miglioramento più significativo è stato nella qualità della propagazione dell'onda cardiaca:
+The most significant improvement was in the quality of cardiac wave propagation:
 \begin{itemize}
-    \item \textbf{Modello iniziale}: Propagazione quasi inesistente, diffusione uniforme
-    \item \textbf{Fase intermedia}: Propagazione parziale, ma con artefatti
-    \item \textbf{Modello ottimizzato}: Chiara propagazione dell'onda con influenza delle regioni a diversa diffusività
+    \item \textbf{Initial model}: Almost non-existent propagation, uniform diffusion
+    \item \textbf{Intermediate phase}: Partial propagation, but with artifacts
+    \item \textbf{Optimized model}: Clear wave propagation with influence of regions of different diffusivity
 \end{itemize}
 
-La soluzione finale mostra chiaramente l'influenza delle regioni a diffusività alterata, corrispondenti a tessuti cardiaci malati, sulla propagazione dell'impulso.
+The final solution clearly shows the influence of regions with altered diffusivity, corresponding to diseased cardiac tissues, on impulse propagation.
 
-\subsection{Confronto con FEM e approcci alternativi}
+\subsection{Comparison with FEM and Alternative Approaches}
 
-Abbiamo confrontato i risultati del nostro modello DeepRitz ottimizzato con quelli ottenuti attraverso:
+We compared the results of our optimized DeepRitz model with those obtained through:
 \begin{itemize}
-    \item Metodo degli elementi finiti (FEM)
-    \item Reti neurali PINN tradizionali
-    \item Approccio CNN supervisionato
+    \item Finite Element Method (FEM)
+    \item Traditional PINN neural networks
+    \item Supervised CNN approach
 \end{itemize}
 
 % \begin{figure}[H]
 %     \centering
 %     \includegraphics[width=0.8\textwidth]{assets/images/sim_results.png}
-%     \caption{Confronto delle soluzioni per $t=20$ ottenute con diversi metodi}
+%     \caption{Comparison of solutions for $t=20$ obtained with different methods}
 %     \label{fig:sim_comparison}
 % \end{figure}
 
-Il modello DeepRitz ottimizzato ha dimostrato:
+The optimized DeepRitz model demonstrated:
 \begin{itemize}
-    \item Maggiore regolarità rispetto alla soluzione FEM
-    \item Migliore riproduzione dell'interfaccia tra regioni a diversa diffusività rispetto alle PINN
-    \item Capacità di generalizzare a parametri fisici non visti durante l'addestramento, a differenza delle CNN
+    \item Greater regularity compared to the FEM solution
+    \item Better reproduction of the interface between regions of different diffusivity compared to PINNs
+    \item Ability to generalize to physical parameters not seen during training, unlike CNNs
 \end{itemize}
 
-\subsection{Lezioni apprese e conclusioni}
+\subsection{Lessons Learned and Conclusions}
 
-Il nostro processo di fine-tuning del modello DeepRitz ha evidenziato diversi principi chiave:
+Our fine-tuning process of the DeepRitz model highlighted several key principles:
 
 \begin{itemize}
-    \item \textbf{L'importanza della regolarità}: La sostituzione della condizione iniziale a gradino con una gaussiana ha mostrato quanto sia cruciale avere funzioni regolari per l'addestramento di reti neurali.
+    \item \textbf{The importance of regularity}: Replacing the step initial condition with a Gaussian showed how crucial it is to have regular functions for neural network training.
     
-    \item \textbf{Il bilanciamento delle componenti della loss}: L'assegnazione di pesi appropriati alle diverse componenti della funzione obiettivo è essenziale per guidare l'apprendimento verso soluzioni fisicamente accurate.
+    \item \textbf{Balancing loss components}: Assigning appropriate weights to the different components of the objective function is essential to guide learning toward physically accurate solutions.
     
-    \item \textbf{La generalizzazione attraverso campionamento dinamico}: La rigenerazione dei punti di collocazione ad ogni epoca è stata determinante per ottenere un modello robusto che generalizza bene su tutto il dominio.
+    \item \textbf{Generalization through dynamic sampling}: Regenerating collocation points at each epoch was crucial for obtaining a robust model that generalizes well across the entire domain.
     
-    \item \textbf{La continuità nel processo di ottimizzazione}: L'implementazione di un sistema di checkpointing completo ha permesso sessioni di addestramento incrementali senza perdita di informazioni.
+    \item \textbf{Continuity in the optimization process}: The implementation of a complete checkpointing system enabled incremental training sessions without loss of information.
     
-    \item \textbf{La necessità di capacità rappresentativa}: Un'architettura sufficientemente profonda e larga si è rivelata indispensabile per catturare le complesse dinamiche spazio-temporali dell'equazione del monodominio.
+    \item \textbf{The need for representational capacity}: A sufficiently deep and wide architecture proved indispensable for capturing the complex spatiotemporal dynamics of the monodomain equation.
 \end{itemize}
 
-In conclusione, il nostro lavoro ha dimostrato che, attraverso un processo sistematico di ottimizzazione, i metodi basati su reti neurali come DeepRitz possono produrre soluzioni competitive con i metodi numerici tradizionali per problemi complessi come l'equazione del monodominio, offrendo al contempo maggiore flessibilità e adattabilità a diverse condizioni fisiche.
+In conclusion, our work has demonstrated that, through a systematic optimization process, neural network-based methods like DeepRitz can produce solutions competitive with traditional numerical methods for complex problems such as the monodomain equation, while offering greater flexibility and adaptability to different physical conditions.
 
 % \begin{figure}[H]
 %     \centering
 %     \includegraphics[width=0.8\textwidth]{assets/images/activation_t21.png}
-%     \caption{Propagazione dell'onda cardiaca al tempo $t=21$ con il modello DeepRitz ottimizzato, che mostra chiaramente l'influenza delle regioni a diversa diffusività}
+%     \caption{Cardiac wave propagation at time $t=21$ with the optimized DeepRitz model, clearly showing the influence of regions with different diffusivity}
 %     \label{fig:wave_propagation}
 % \end{figure}

@@ -1,7 +1,7 @@
 
-\section{Deep Learning Approaches}
+\section{Other Explored Methods}
 
-In our research, we explored three different deep learning architectures to solve the monodomain equation, aiming to find a surrogate model that could be faster than the traditional Finite Element Method (FEM) while maintaining high accuracy. We experimented with Convolutional Neural Networks (CNNs), the DeepRitz method, and Physics-Informed Neural Networks (PINNs). Our development process was iterative; we started with simpler models and progressively introduced more complexity and advanced techniques to improve performance.
+In our research, we explored different deep learning architectures to solve the monodomain equation, aiming to find a surrogate model that could be faster than the traditional Finite Element Method (FEM) while maintaining high accuracy. We experimented with Convolutional Neural Networks (CNNs) and Physics-Informed Neural Networks (PINNs), complementary to our main focus on the DeepRitz method (discussed in detail in Section 3). Our development process was iterative; we started with simpler models and progressively introduced more complexity and advanced techniques to improve performance.
 
 \subsection{Convolutional Neural Network (CNN) as a Surrogate Model}
 
@@ -58,24 +58,13 @@ These advanced models demonstrated more stable training dynamics, but required c
     \caption{Training losses for CNNs with advanced regularization techniques.}
 \end{figure}
 
-\subsection{Deep Ritz Method}
-The Deep Ritz method offers a different paradigm. Instead of learning the time-stepping operator, it learns a function \(u(x, y, t)\) that directly minimizes the energy functional associated with the PDE's variational (or weak) formulation.
-
-\subsubsection{Model $deepritz\_model\_220842$}
-Our implementation, $DeepRitzSolver$, is a Multi-Layer Perceptron (MLP) that takes spatial and temporal coordinates \((x, y, t)\) as input and outputs the solution \(u\). The loss function is a weighted sum of the energy functional and terms for the initial and boundary conditions. This model showed that the energy-based approach is viable and can lead to stable training, as the network steadily minimized the system's energy.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.8\textwidth]{../models/deepritz\_model\_154550/training_loss.png}
-    \caption{Training loss for the Deep Ritz model ($deepritz\_model\_220842$).}
-    \label{fig:deepritz_loss}
-\end{figure}
-
 \subsection{Physics-Informed Neural Network (PINN)}
-The PINN approach is similar to Deep Ritz in that it learns the function \(u(x, y, t)\), but it enforces the PDE in its strong form. The loss function directly penalizes the PDE residual.
+The PINN approach learns a function \(u(x, y, t)\) by directly enforcing the PDE in its strong form. Unlike the DeepRitz method (which uses a variational formulation), the PINN loss function directly penalizes the PDE residual.
 
 \subsubsection{Model $pinn\_model\_113908$}
-Our $PINNSolver$ uses an MLP architecture similar to the Deep Ritz model. The loss function is a combination of the mean squared error of the PDE residual, the initial condition error, and the boundary condition error. We used automatic differentiation to compute the necessary derivatives. Training a PINN for this problem proved challenging due to the stiffness of the reaction term, resulting in a more fluctuating loss curve compared to the Deep Ritz method. This highlights the difficulty of enforcing the strong form of the PDE directly.
+Our $PINNSolver$ uses an MLP architecture similar to the DeepRitz model but with a different loss formulation. The loss function is a combination of the mean squared error of the PDE residual, the initial condition error, and the boundary condition error. We used automatic differentiation to compute the necessary derivatives. 
+
+Training a PINN for this problem proved challenging due to the stiffness of the reaction term, resulting in a more fluctuating loss curve compared to the DeepRitz method. This highlights one of the key differences between the two approaches: while DeepRitz focuses on minimizing the energy functional (which can lead to more stable training), PINNs directly enforce the differential equation constraints, which can be more precise but also more difficult to optimize.
 
 \begin{figure}[H]
     \centering
