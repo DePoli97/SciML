@@ -77,7 +77,7 @@ def run_fem_simulation(case_name, sigma_d_factor):
     print(f"  {len(times)} frame salvati in: {frame_dir}")
     
     # Crea il video dai frame
-    create_video_from_frames(frame_dir, case_name)
+    create_video_from_frames(frame_dir, case_name, fps=10)
 
 def train_pinn_model(model_name=None):
     """
@@ -270,84 +270,86 @@ def generate_pinn_frames(case='normal', model_name=None):
 
 def train_cnn_model(model_name=None):
     """
-    Addestra il modello CNN avanzato usando i dati generati dal FEM solver e salva il modello addestrato.
+    Addestra un modello CNN avanzato con tecniche anti-overfitting estremamente potenziate.
     
     Args:
-        model_name (str, optional): Nome del modello da usare. Se None, verrà generato automaticamente.
+        model_name: Nome del modello da addestrare/sovrascrivere (opzionale)
+        
+    Returns:
+        Nome del modello addestrato
     """
-    # Crea il nome del modello se non specificato
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    print(f"Addestramento CNN su dispositivo: {device}")
+
+    # Crea un nuovo modello o carica uno esistente
     if model_name is None:
+        # Crea un nuovo modello con timestamp
         timestamp = datetime.now().strftime('%H%M%S')
         model_name = f"cnn_model_{timestamp}"
-    
-    # Crea directory per il modello specifico
-    models_base_dir = 'models'
-    model_dir = os.path.join(models_base_dir, model_name)
-    os.makedirs(model_dir, exist_ok=True)
-    
-    # Definisci percorsi dei file
-    model_path = os.path.join(model_dir, 'model_weights.pth')
-    loss_plot_path = os.path.join(model_dir, 'training_loss.png')
-    script_copy_path = os.path.join(model_dir, 'cnn_solver_script.py')
-    
-    # Otteniamo il percorso del modulo corrente
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # Costruiamo il percorso relativo al file cnn_solver.py
-    cnn_script_path = os.path.join(current_dir, 'cnn_solver.py')
-    shutil.copy2(cnn_script_path, script_copy_path)
-    print(f"Script CNN salvato in: {script_copy_path}")
-    
-    # Crea il modello con latent_dim aumentato per maggiore capacità
-    print("Inizializzazione del modello CNN avanzato...")
-    cnn_model = CNNSolver(
-        device=DEVICE,
-        prediction_steps=5,  # Predizione multistep
-        latent_dim=128,      # Dimensione spazio latente aumentata
-        dropout_rate=0.4     # Dropout più forte per regolarizzazione
-    ).to(DEVICE)
-    
-    # Crea il trainer con iperparametri ottimizzati
-    trainer = CNNTrainer(
-        cnn_model,
-        learning_rate=5e-4,  # Learning rate iniziale aumentato
-        device=DEVICE,
-        weight_decay=1e-4    # Regolarizzazione L2 più aggressiva
-    )
-    
-    # Genera dati di training con FEM solver per diversi valori di diffusività
-    print("Inizializzazione FEM Solver per generazione dati di training...")
-    fem_solver = FEMSolver(nvx=NVX, nvy=NVY, sigma_h=SIGMA_H, a=A, fr=FR, ft=FT, fd=FD)
-    
-    # Usa diversi valori di sigma per il dataset (includendo più valori per robustezza)
-    sigma_values = [9.5298e-5, 4.7649e-4, 9.5298e-4, 4.7649e-3, 9.5298e-3]  # 0.1x, 0.5x, 1x, 5x, 10x
-    
-    # Genera i dati di training con più campioni
-    print("Generazione dati di training dal FEM solver...")
-    inputs, targets, sigmas = trainer.generate_training_data_from_fem(
-        fem_solver, sigma_values, T=T, dt=DT, num_samples=500  # Aumentato numero di campioni
-    )
-    
-    # Converti in dataset PyTorch
-    from torch.utils.data import TensorDataset, DataLoader
-    
-    # Prepara i tensori per il dataloader
-    input_tensor = torch.stack(inputs)
-    sigma_tensor = torch.tensor(sigmas, dtype=torch.float32).view(-1, 1)
-    
-    # Creiamo una lista di liste di tensori target
-    target_tensors = []
-    for i in range(len(targets[0])):
-        target_tensors.append(torch.stack([t[i] for t in targets]))
-    
-    # Dividi in training e validation (80% train, 20% validation)
-    n_samples = len(inputs)
-    train_idx = int(0.8 * n_samples)
-    
-    # Creazione dei dataset di train e validation
-    train_dataset = (input_tensor[:train_idx], 
+        print(f"Creazione nuovo modello CNN ultra-avanzato: {model_name}")
+        
+        # Crea la directory per salvare il modello
+        model_dir = create_model_dir(model_name)
+        model_path = os.path.join(model_dir, 'model_weights.pth')
+        
+        # Inizializza il modello CNN con architettura potenziata
+        cnn_model = CNNSolver(
+            device=device, 
+            prediction_steps=5,
+            latent_dim=128,  # Spazio latente aumentato
+            dropout_rate=0.5  # Dropout aggressivo
+        ).to(device)
+        
+        # Inizializza il trainer con LR ridotto e weight decay aumentato
+        trainer = CNNTrainer(
+            cnn_model, 
+            learning_rate=2e-4,  # Learning rate ridotto per stabilità
+            device=device,
+            weight_decay=2e-3  # Weight decay aumentato per regolarizzazione
+        )
+        
+        # Genera dati di training con simulatore FEM
+        # Usiamo sigma differenti per migliorare la robustezza
+        sigma_h_normal = SIGMA_H
+        sigma_values = [
+            sigma_h_normal * 0.01,  # Ultra-bassa diffusività
+            sigma_h_normal * 0.1,   # Bassa diffusività
+            sigma_h_normal * 0.5,   # Medio-bassa diffusività
+            sigma_h_normal,         # Diffusività normale
+            sigma_h_normal * 2.0,   # Medio-alta diffusività
+            sigma_h_normal * 10.0,  # Alta diffusività
+            sigma_h_normal * 20.0,  # Ultra-alta diffusività
+        ]
+        
+        print(f"Generazione dati di training con 7 valori di sigma: {sigma_values}")
+        fem_solver = FEMSolver(nvx=NVX, nvy=NVY, sigma_h=sigma_h_normal, a=A, fr=FR, ft=FT, fd=FD)
+        
+        inputs, targets, sigmas = trainer.generate_training_data_from_fem(
+            fem_solver, 
+            sigma_values, 
+            T=35.0, 
+            dt=0.1, 
+            num_samples=500  # Aumentato per più dati
+        )
+        
+        # Converti in dataset PyTorch
+        from torch.utils.data import TensorDataset, DataLoader
+        input_tensor = torch.stack(inputs)
+        sigma_tensor = torch.tensor(sigmas, dtype=torch.float32).view(-1, 1)
+        
+        # Creiamo liste di target per ogni timestep di prediction
+        target_tensors = []
+        for i in range(len(targets[0])):
+            target_tensors.append(torch.stack([t[i] for t in targets]))
+        
+        # Dividi in training (80%) e validation (20%)
+        n_samples = len(inputs)
+        train_idx = int(0.8 * n_samples)
+        
+        train_dataset = (input_tensor[:train_idx],
                      [t[:train_idx] for t in target_tensors], 
                      sigma_tensor[:train_idx])
-    val_dataset = (input_tensor[train_idx:], 
+        val_dataset = (input_tensor[train_idx:], 
                    [t[train_idx:] for t in target_tensors], 
                    sigma_tensor[train_idx:])
     
@@ -370,10 +372,10 @@ def train_cnn_model(model_name=None):
     history = trainer.train(
         train_loader,
         val_loader,
-        num_epochs=1000,             # Triplicato il numero di epoche
+        num_epochs=3000,             # Triplicato il numero di epoche
         mse_weight=0.6,             # Peso della MSE loss
         mae_weight=0.4,             # Peso della MAE loss
-        early_stop_patience=100      # Patience aumentata per consentire plateau nel training
+        early_stop_patience=300      # Patience aumentata per consentire plateau nel training
     )
     
     # Salva il modello addestrato

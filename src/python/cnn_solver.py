@@ -135,6 +135,12 @@ class CNNSolver(nn.Module):
     e regolarizzazione tramite dropout per prevenire l'overfitting.
     Include ora anche regolarizzazione spettrale, stochastic depth, GroupNorm e weight standardization
     per combattere l'overfitting e migliorare la generalizzazione.
+    
+    Nuove funzionalità:
+    - Deep Supervision con output intermedi
+    - Feature extraction per Self-Distillation e Feature Alignment
+    - Architettura a multi-scala con skip connections migliorate
+    - Incorporazione più complessa dei parametri fisici
     """
     def __init__(self, device=None, prediction_steps=1, latent_dim=128, nvx=101, nvy=101, dropout_rate=0.5):
         super(CNNSolver, self).__init__()
@@ -145,70 +151,107 @@ class CNNSolver(nn.Module):
         self.nvx = nvx  # Numero di punti nella direzione x
         self.nvy = nvy  # Numero di punti nella direzione y
         
-        # Encoder molto più profondo con più livelli di estrazione caratteristiche
-        self.encoder = nn.Sequential(
-            # Primo livello - estrazione caratteristiche iniziali
+        # ----- ENCODER PATH -----
+        self.enc_stage1 = nn.Sequential(
             WeightStandardizedConv2d(1, 16, kernel_size=3, padding=1),
             nn.GroupNorm(4, 16),
             nn.LeakyReLU(0.1, inplace=True),
-            ResUNetBlock(16, 32, dropout_rate=dropout_rate),
-            nn.MaxPool2d(2),  # Riduzione dimensionalità 2x
-            
-            # Secondo livello - media risoluzione
+            ResUNetBlock(16, 32, dropout_rate=dropout_rate)
+        )
+        self.enc_pool1 = nn.MaxPool2d(2)  # Riduzione a 1/2
+        
+        self.enc_stage2 = nn.Sequential(
             ResUNetBlock(32, 64, dropout_rate=dropout_rate),
-            ResUNetBlock(64, 64, dropout_rate=dropout_rate),
-            nn.MaxPool2d(2),  # Riduzione dimensionalità 4x
-            
-            # Terzo livello - bassa risoluzione, alta semantica
+            ResUNetBlock(64, 64, dropout_rate=dropout_rate)
+        )
+        self.enc_pool2 = nn.MaxPool2d(2)  # Riduzione a 1/4
+        
+        self.enc_stage3 = nn.Sequential(
             ResUNetBlock(64, 128, dropout_rate=dropout_rate),
-            ResUNetBlock(128, 128, dropout_rate=dropout_rate),
-            nn.MaxPool2d(2),  # Riduzione dimensionalità 8x
-            
-            # Quarto livello - ulteriore compressione
+            ResUNetBlock(128, 128, dropout_rate=dropout_rate)
+        )
+        self.enc_pool3 = nn.MaxPool2d(2)  # Riduzione a 1/8
+        
+        self.enc_stage4 = nn.Sequential(
             ResUNetBlock(128, 256, dropout_rate=dropout_rate),
-            nn.Dropout2d(0.25),  # Aggiunto dropout addizionale tra livelli
-            nn.MaxPool2d(2),  # Riduzione dimensionalità 16x
-            
-            # Bottleneck con attenzione alla preservazione dell'informazione
+            nn.Dropout2d(0.25)
+        )
+        self.enc_pool4 = nn.MaxPool2d(2)  # Riduzione a 1/16
+        
+        # ----- BOTTLENECK -----
+        self.bottleneck = nn.Sequential(
             ResUNetBlock(256, latent_dim, dropout_rate=dropout_rate),
-            ResUNetBlock(latent_dim, latent_dim, dropout_rate=dropout_rate),
+            ResUNetBlock(latent_dim, latent_dim, dropout_rate=dropout_rate)
         )
         
-        # Decoder migliorato con percorso più graduale e più livelli di trasformazione
-        self.decoder = nn.Sequential(
-            # Espansione iniziale dal bottleneck profondo
-            ResUNetBlock(latent_dim, 256, dropout_rate=dropout_rate),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            # Primo livello di upsampling - molto bassa risoluzione
-            ResUNetBlock(256, 128, dropout_rate=dropout_rate),
-            ResUNetBlock(128, 128, dropout_rate=dropout_rate),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            # Secondo livello di upsampling - bassa risoluzione
-            ResUNetBlock(128, 64, dropout_rate=dropout_rate),
-            ResUNetBlock(64, 64, dropout_rate=dropout_rate),
-            nn.Dropout2d(0.2),  # Aggiunto dropout addizionale
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            # Terzo livello di upsampling - media risoluzione
-            ResUNetBlock(64, 32, dropout_rate=dropout_rate),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            # Livello di output - alta risoluzione
-            ResUNetBlock(32, 16, dropout_rate=dropout_rate),
-            
-            # Adatta le dimensioni esattamente all'output desiderato
+        # ----- DECODER PATH -----
+        self.dec_up4 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.dec_stage4 = nn.Sequential(
+            ResUNetBlock(latent_dim + 256, 256, dropout_rate=dropout_rate),
+            ResUNetBlock(256, 256, dropout_rate=dropout_rate)
+        )
+        # Output intermedio per deep supervision
+        self.aux_out4 = nn.Sequential(
+            WeightStandardizedConv2d(256, 64, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.LeakyReLU(0.1, inplace=True),
             nn.Upsample(size=(nvx, nvy), mode='bilinear', align_corners=True),
+            WeightStandardizedConv2d(64, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        self.dec_up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.dec_stage3 = nn.Sequential(
+            ResUNetBlock(256 + 128, 128, dropout_rate=dropout_rate),
+            ResUNetBlock(128, 128, dropout_rate=dropout_rate),
+            nn.Dropout2d(0.2)
+        )
+        # Output intermedio per deep supervision
+        self.aux_out3 = nn.Sequential(
+            WeightStandardizedConv2d(128, 32, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Upsample(size=(nvx, nvy), mode='bilinear', align_corners=True),
+            WeightStandardizedConv2d(32, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        self.dec_up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.dec_stage2 = nn.Sequential(
+            ResUNetBlock(128 + 64, 64, dropout_rate=dropout_rate),
+            ResUNetBlock(64, 64, dropout_rate=dropout_rate)
+        )
+        # Output intermedio per deep supervision
+        self.aux_out2 = nn.Sequential(
+            WeightStandardizedConv2d(64, 16, kernel_size=3, padding=1),
+            nn.GroupNorm(4, 16),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Upsample(size=(nvx, nvy), mode='bilinear', align_corners=True),
+            WeightStandardizedConv2d(16, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        self.dec_up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.dec_stage1 = nn.Sequential(
+            ResUNetBlock(64 + 32, 32, dropout_rate=dropout_rate),
+            ResUNetBlock(32, 32, dropout_rate=dropout_rate)
+        )
+        
+        # Output finale
+        self.final = nn.Sequential(
+            nn.Upsample(size=(nvx, nvy), mode='bilinear', align_corners=True),
+            WeightStandardizedConv2d(32, 16, kernel_size=3, padding=1),
+            nn.GroupNorm(4, 16),
+            nn.LeakyReLU(0.1, inplace=True),
             WeightStandardizedConv2d(16, 8, kernel_size=3, padding=1),
             nn.GroupNorm(2, 8),
             nn.LeakyReLU(0.1, inplace=True),
             WeightStandardizedConv2d(8, 1, kernel_size=1),
-            nn.Sigmoid()  # Garantisce output in [0,1]
+            nn.Sigmoid()
         )
         
-        # Proiezione dei parametri fisici nello spazio latente con architettura più complessa
-        # e ulteriormente regolarizzata per ridurre l'overfitting
+        # ----- INTEGRAZIONE PARAMETRI FISICI -----
+        # Proiezione potenziata dei parametri fisici
         self.params_projection = nn.Sequential(
             nn.Linear(4, 64),
             nn.LayerNorm(64),
@@ -226,8 +269,10 @@ class CNNSolver(nn.Module):
             nn.LayerNorm(latent_dim)  # Normalizzazione finale
         )
         
-        # Modulo di previsione temporale molto più profondo con molti blocchi residuali
-        # per catturare meglio l'evoluzione temporale
+        # Modulo FiLM per migliore condizionamento dei parametri fisici
+        self.film_bottleneck = nn.Linear(latent_dim, latent_dim*2)  # Scale & shift per ogni canale
+        
+        # ----- EVOLUZIONE TEMPORALE -----
         self.time_evolution = nn.Sequential(
             ResUNetBlock(latent_dim, latent_dim, dropout_rate=dropout_rate),
             ResUNetBlock(latent_dim, latent_dim, dropout_rate=dropout_rate),
@@ -236,71 +281,154 @@ class CNNSolver(nn.Module):
             ResUNetBlock(latent_dim, latent_dim, dropout_rate=dropout_rate)
         )
         
+    def _apply_film(self, features, params):
+        """Applica condizionamento FiLM (Feature-wise Linear Modulation)"""
+        batch_size = features.size(0)
+        film_params = self.film_bottleneck(params)
+        gamma, beta = film_params.chunk(2, dim=1)
+        
+        # Reshape per broadcasting
+        gamma = gamma.view(batch_size, -1, 1, 1)
+        beta = beta.view(batch_size, -1, 1, 1)
+        
+        # Applica trasformazione affine per canale
+        return features * (1 + gamma) + beta
+        
     def _spatial_params_integration(self, latent, sigma_h):
-        """Integra i parametri fisici nello spazio latente."""
-        # sigma_h può essere diverso per ogni simulazione (low, normal, high)
-        batch_size = latent.shape[0]
+        """Integra i parametri fisici nello spazio latente usando FiLM."""
+        batch_size = latent.size(0)
         
-        # Gestisci sia il caso in cui sigma_h è un tensore che il caso in cui è uno scalare
+        # Gestisci sigma_h in modo più robusto
         if isinstance(sigma_h, torch.Tensor):
-            # Se sigma_h è già un tensore (durante il training), usalo direttamente
-            # Assicurati che abbia la forma corretta (batch_size, 1)
-            if len(sigma_h.shape) == 1:
-                sigma_h_tensor = sigma_h.view(-1, 1).to(self.device)
+            if sigma_h.dim() == 0:  # Scalare
+                sigma_h_batch = sigma_h.expand(batch_size)
+            elif sigma_h.dim() == 1:  # Vettore
+                if sigma_h.size(0) == 1:
+                    # Singolo valore per tutti i batch
+                    sigma_h_batch = sigma_h.expand(batch_size)
+                elif sigma_h.size(0) == batch_size:
+                    # Un valore per ogni elemento del batch
+                    sigma_h_batch = sigma_h
+                else:
+                    # Dimensione non compatibile, resize
+                    sigma_h_batch = sigma_h[:batch_size] if sigma_h.size(0) > batch_size else torch.cat([sigma_h, sigma_h.repeat(batch_size - sigma_h.size(0))])
+            elif sigma_h.dim() == 2:  # Matrice [batch_size, 1]
+                sigma_h_batch = sigma_h.squeeze(1)
             else:
-                sigma_h_tensor = sigma_h.to(self.device)
+                raise ValueError(f"Formato non supportato per sigma_h: {sigma_h.size()}")
         else:
-            # Se sigma_h è uno scalare (durante l'inferenza), creane un tensore
-            sigma_h_tensor = torch.full((batch_size, 1), sigma_h, dtype=torch.float32).to(self.device)
+            # Se è uno scalare Python, convertilo in tensore
+            sigma_h_batch = torch.full((batch_size,), float(sigma_h), device=self.device)
         
-        # Parametri aggiuntivi che potrebbero essere inclusi in futuro
-        zeros = torch.zeros_like(sigma_h_tensor).to(self.device)
-        params = torch.cat([sigma_h_tensor, zeros, zeros, zeros], dim=1)
+        # Costanti fisiche
+        a = 18.515  # Costante di diffusione
+        I_ext = 0.0  # Corrente esterna
         
-        # Proiezione e reshape per essere compatibile con il tensore latente
-        params_projected = self.params_projection(params)
-        params_spatial = params_projected.view(batch_size, self.latent_dim, 1, 1)
+        # Crea un tensore [batch_size, 4] con [sigma_h, sigma_t, a, I_ext]
+        physical_params = torch.zeros((batch_size, 4), device=self.device)
+        physical_params[:, 0] = sigma_h_batch  # Diffusività longitudinale
+        physical_params[:, 1] = sigma_h_batch * 0.25  # Diffusività trasversale
+        physical_params[:, 2] = a
+        physical_params[:, 3] = I_ext
         
-        return latent + params_spatial
+        # Proietta i parametri fisici nello spazio latente
+        params_embedding = self.params_projection(physical_params)
         
-    def forward(self, x, sigma_h, steps=None):
+        # Applica condizionamento FiLM
+        modulated_latent = self._apply_film(latent, params_embedding)
+        
+        return modulated_latent
+        
+    def forward(self, x, sigma_h, steps=None, return_features=False):
         """
-        Predice l'evoluzione della soluzione per un numero specificato di passi.
+        Forward pass con supporto per:
+        - Predizione multi-step 
+        - Feature extraction per self-distillation
+        - Deep supervision con output intermedi
         
         Args:
-            x: Tensore di input [batch, 1, height, width] che rappresenta lo stato attuale
-            sigma_h: Coefficiente di diffusione
-            steps: Numero di passi temporali da predire (se None, usa prediction_steps)
+            x: Tensore di input [batch_size, 1, height, width]
+            sigma_h: Tensore o scalare con i coefficienti di diffusione
+            steps: Numero di passi di predizione (default: self.prediction_steps)
+            return_features: Se True, ritorna anche le feature intermedie
             
         Returns:
-            Lista di tensori, ciascuno rappresentante la soluzione a t+i*dt
+            Tuple di tensori delle predizioni temporali e, opzionalmente, feature intermedie
         """
         if steps is None:
             steps = self.prediction_steps
             
-        batch_size = x.shape[0]
+        # Tensor encoding con connessioni skip
+        enc1 = self.enc_stage1(x)
+        enc2 = self.enc_stage2(self.enc_pool1(enc1))
+        enc3 = self.enc_stage3(self.enc_pool2(enc2))
+        enc4 = self.enc_stage4(self.enc_pool3(enc3))
         
-        # Estrae lo spazio latente dalla soluzione attuale
-        latent = self.encoder(x)
+        # Bottleneck
+        bottleneck = self.bottleneck(self.enc_pool4(enc4))
         
-        # Integra i parametri fisici
-        latent = self._spatial_params_integration(latent, sigma_h)
+        # Integrazione parametri fisici nel bottleneck
+        modulated_latent = self._spatial_params_integration(bottleneck, sigma_h)
         
+        # Lista per memorizzare le predizioni
         predictions = []
-        current_state = latent
         
-        # Evolve lo stato nello spazio latente per il numero di passi richiesto
+        # Lista per memorizzare le feature per self-distillation
+        features = [enc1, enc2, enc3, enc4, bottleneck] if return_features else None
+        
+        # Stato corrente da far evolvere nel tempo
+        current_state = modulated_latent
+        
+        # Evoluzione temporale e predizione per ciascun passo richiesto
         for _ in range(steps):
-            # Applica l'evoluzione temporale
-            next_state = self.time_evolution(current_state)
+            # Evoluzione temporale
+            evolved_state = self.time_evolution(current_state)
+            current_state = evolved_state
             
-            # Decodifica il nuovo stato
-            prediction = self.decoder(next_state)
+            # Decoding path con connessioni skip - con controllo dimensioni
+            # Upsampling e concatenazione con controllo dimensioni
+            dec_up4_out = self.dec_up4(evolved_state)
+            # Verifichiamo che le dimensioni siano compatibili
+            if dec_up4_out.shape[2:] != enc4.shape[2:]:
+                dec_up4_out = F.interpolate(dec_up4_out, size=enc4.shape[2:], mode='bilinear', align_corners=True)
+            d4 = self.dec_stage4(torch.cat([dec_up4_out, enc4], dim=1))
+            aux4 = self.aux_out4(d4)  # Output intermedio
             
-            predictions.append(prediction)
-            current_state = next_state
+            # Stage 3
+            dec_up3_out = self.dec_up3(d4)
+            if dec_up3_out.shape[2:] != enc3.shape[2:]:
+                dec_up3_out = F.interpolate(dec_up3_out, size=enc3.shape[2:], mode='bilinear', align_corners=True)
+            d3 = self.dec_stage3(torch.cat([dec_up3_out, enc3], dim=1))
+            aux3 = self.aux_out3(d3)  # Output intermedio
             
-        return predictions
+            # Stage 2
+            dec_up2_out = self.dec_up2(d3)
+            if dec_up2_out.shape[2:] != enc2.shape[2:]:
+                dec_up2_out = F.interpolate(dec_up2_out, size=enc2.shape[2:], mode='bilinear', align_corners=True)
+            d2 = self.dec_stage2(torch.cat([dec_up2_out, enc2], dim=1))
+            aux2 = self.aux_out2(d2)  # Output intermedio
+            
+            # Stage 1
+            dec_up1_out = self.dec_up1(d2)
+            if dec_up1_out.shape[2:] != enc1.shape[2:]:
+                dec_up1_out = F.interpolate(dec_up1_out, size=enc1.shape[2:], mode='bilinear', align_corners=True)
+            d1 = self.dec_stage1(torch.cat([dec_up1_out, enc1], dim=1))
+            
+            # Output finale
+            output = self.final(d1)
+            
+            if self.training:
+                # Durante il training, aggiungi alla lista sia l'output finale che gli intermedi
+                # per la deep supervision
+                predictions.append((output, aux2, aux3, aux4))
+            else:
+                # Durante inference usa solo l'output finale
+                predictions.append(output)
+                
+        if return_features:
+            return predictions, features
+        else:
+            return predictions
     
     def compute_solution(self, T, nvx=None, nvy=None, sigma_h=None, num_frames=100, ic=None):
         """
@@ -371,17 +499,19 @@ class CNNSolver(nn.Module):
 
 class CNNTrainer:
     """
-    Trainer avanzato per il modello CNN con strategie di ottimizzazione migliorate.
+    Trainer avanzato per il modello CNN con strategie contro l'overfitting estremamente potenziate.
     
     Caratteristiche:
-    - Ottimizzatore AdamW con weight decay adattivo
-    - Loss ibrida MSE+MAE con pesi configurabili
-    - Learning rate scheduler multi-stadio (ReduceLROnPlateau + CosineAnnealingWarmRestarts)
-    - Gradient clipping per prevenire esplosione dei gradienti
-    - Supporto per early stopping
-    - Aumento/diminuzione progressivo del learning rate (warmup/cooldown)
+    - Ottimizzatore SAM (Sharpness-Aware Minimization)
+    - Deep Supervision con skip loss
+    - Self-Distillation con EMA
+    - Curriculum Learning con data augmentation progressiva
+    - Learning Rate scheduling avanzato e adattivo
+    - Gradient clipping per stabilità numerica
+    - Feature alignment loss per migliore generalizzazione
+    - Dynamic loss weighting e R-Drop
     """
-    def __init__(self, model, learning_rate=5e-4, device=None, weight_decay=1e-3):
+    def __init__(self, model, learning_rate=3e-4, device=None, weight_decay=1e-3):
         self.device = device if device is not None else torch.device('cpu')
         self.model = model.to(self.device)
         
@@ -402,7 +532,10 @@ class CNNTrainer:
             adaptive=True  # Perturbazione adattiva per parametro
         )
         
-        # Stochastic Weight Averaging per migliorare la generalizzazione
+        # Exponential Moving Average (EMA) per stabilizzare le predizioni
+        self.ema = EMA(model, decay=0.9995)
+        
+        # Stochastic Weight Averaging
         self.swa_model = AveragedModel(model)
         self.swa_scheduler = SWALR(
             self.optimizer.base_optimizer,  # Nota: ora usiamo base_optimizer dentro SAM
@@ -412,29 +545,39 @@ class CNNTrainer:
         )
         self.swa_start = 100  # Inizia SWA dopo 100 epoche
         
-        # Loss functions più avanzate con focus su diverse caratteristiche dell'errore
-        self.criterion = nn.MSELoss()  # Errori grandi
-        self.mae_criterion = nn.L1Loss()  # Robustezza agli outlier
+        # Loss functions avanzate
+        self.criterion = nn.MSELoss()  # Errori grandi (MSE)
+        self.mae_criterion = nn.L1Loss()  # Robustezza agli outlier (MAE)
+        self.distillation_loss = SelfDistillationLoss(T=3.0)  # Self-distillation
+        self.feature_alignment_loss = FeatureAlignmentLoss()  # Allineamento features
         
         # Learning rate scheduler - riduce il LR quando la loss si stabilizza
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer.base_optimizer,  # Nota: ora usiamo base_optimizer dentro SAM
-            'min', patience=20, factor=0.5, min_lr=5e-8, verbose=True
+            'min', patience=20, factor=0.5, min_lr=1e-7, verbose=True
         )
         
         # Scheduler secondario per oscillazioni LR
         self.cosine_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer.base_optimizer,  # Nota: ora usiamo base_optimizer dentro SAM
+            self.optimizer.base_optimizer,
             T_0=20, T_mult=2, eta_min=1e-7
         )
+        
+        # Scheduler per aumentare gradualmente l'intensità della data augmentation
+        self.augmentation_scheduler = {
+            'noise_sigma': lambda epoch, total: min(0.03, 0.005 + 0.025 * epoch / total),
+            'cutout_prob': lambda epoch, total: min(0.7, 0.3 + 0.4 * epoch / total),
+            'mixup_alpha': lambda epoch, total: min(0.8, 0.2 + 0.6 * epoch / total),
+        }
         
         # Tracciamento del best model per early stopping
         self.best_loss = float('inf')
         self.best_model_state = None
+        self.best_ema_state = None
     
     def generate_training_data_from_fem(self, fem_solver, sigmas, T, dt, num_samples=100, seed=42):
         """
-        Genera dati di training dal solver FEM con opzionale data augmentation.
+        Genera dati di training dal solver FEM con data augmentation estrema.
         
         Args:
             fem_solver: Istanza di FEMSolver
@@ -444,9 +587,9 @@ class CNNTrainer:
             num_samples: Numero di coppie (stato, evoluzione) da generare
             
         Returns:
-            inputs: Tensore degli stati iniziali [num_samples, channels, height, width]
-            targets: Tensore degli stati futuri [num_samples, channels, height, width]
-            sigma_values: Tensore dei coefficienti di diffusione [num_samples]
+            inputs: Tensore degli stati iniziali
+            targets: Tensore degli stati futuri 
+            sigma_values: Tensore dei coefficienti di diffusione
         """
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -457,7 +600,7 @@ class CNNTrainer:
         targets = []
         sigma_values = []
         
-        print("Generazione dati di training dal solver FEM...")
+        print("Generazione dati di training dal solver FEM con augmentation...")
         for sigma in sigmas:
             # Configura il solver FEM con questo sigma
             fem_solver.sigma_h = sigma
@@ -483,35 +626,122 @@ class CNNTrainer:
                 targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
                 sigma_values.append(sigma)
                 
-                # Data Augmentation 1: Aggiungi rumore gaussiano all'input (aumenta la robustezza)
-                if np.random.rand() < 0.7:  # 70% di probabilità
-                    noise_level = np.random.uniform(0.001, 0.015)  # Rumore maggiore
-                    noisy_input = input_state + np.random.normal(0, noise_level, input_state.shape)
-                    # Mantieni i valori nell'intervallo [0, 1]
-                    noisy_input = np.clip(noisy_input, 0, 1)
-                    inputs.append(torch.tensor(noisy_input, dtype=torch.float32).view(1, nvx, nvy))
+                # ----- TECNICHE DI AUGMENTATION ANCORA PIÙ AGGRESSIVE -----
+                
+                # 1. Rumore gaussiano variabile (70% probabilità)
+                if np.random.rand() < 0.7:
+                    for noise_level in [0.005, 0.01, 0.02]:  # Multiple noise levels
+                        noisy_input = input_state + np.random.normal(0, noise_level, input_state.shape)
+                        noisy_input = np.clip(noisy_input, 0, 1)
+                        inputs.append(torch.tensor(noisy_input, dtype=torch.float32).view(1, nvx, nvy))
+                        targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                        sigma_values.append(sigma)
+                
+                # 2. Jitter sigma con più valori (80% probabilità)
+                if np.random.rand() < 0.8:
+                    for jitter_factor in [0.7, 0.85, 1.15, 1.3]:  # Multiple jitter factors
+                        jittered_sigma = sigma * jitter_factor
+                        inputs.append(torch.tensor(input_state, dtype=torch.float32).view(1, nvx, nvy))
+                        targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                        sigma_values.append(jittered_sigma)
+                
+                # 3. Cutouts multipli (50% probabilità)
+                if np.random.rand() < 0.5:
+                    for _ in range(3):  # Try multiple cutout patterns
+                        cutout_input = input_state.copy()
+                        # Applica 1-3 cutouts casuali
+                        num_cutouts = np.random.randint(1, 4)
+                        for _ in range(num_cutouts):
+                            mask_size = np.random.randint(5, 20)
+                            h_start = np.random.randint(0, nvx - mask_size)
+                            w_start = np.random.randint(0, nvy - mask_size)
+                            cutout_input[h_start:h_start+mask_size, w_start:w_start+mask_size] = 0
+                        inputs.append(torch.tensor(cutout_input, dtype=torch.float32).view(1, nvx, nvy))
+                        targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                        sigma_values.append(sigma)
+                
+                # 4. Shift spaziale (40% probabilità)
+                if np.random.rand() < 0.4:
+                    for shift_amount in [1, 2, 3]:  # Shift di 1-3 pixel
+                        shift_dir = np.random.randint(0, 4)  # 0=up, 1=right, 2=down, 3=left
+                        shifted_input = np.zeros_like(input_state)
+                        
+                        if shift_dir == 0:  # Shift up
+                            shifted_input[:-shift_amount, :] = input_state[shift_amount:, :]
+                        elif shift_dir == 1:  # Shift right
+                            shifted_input[:, shift_amount:] = input_state[:, :-shift_amount]
+                        elif shift_dir == 2:  # Shift down
+                            shifted_input[shift_amount:, :] = input_state[:-shift_amount, :]
+                        else:  # Shift left
+                            shifted_input[:, :-shift_amount] = input_state[:, shift_amount:]
+                        
+                        inputs.append(torch.tensor(shifted_input, dtype=torch.float32).view(1, nvx, nvy))
+                        targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                        sigma_values.append(sigma)
+                
+                # 5. Contrast jitter (40% probabilità)
+                if np.random.rand() < 0.4:
+                    for contrast_factor in [0.8, 1.2]:
+                        contrast_input = np.clip((input_state - 0.5) * contrast_factor + 0.5, 0, 1)
+                        inputs.append(torch.tensor(contrast_input, dtype=torch.float32).view(1, nvx, nvy))
+                        targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
+                        sigma_values.append(sigma)
+                        
+                # 6. GridMask (30% probabilità)
+                if np.random.rand() < 0.3:
+                    grid_input = input_state.copy()
+                    grid_size = np.random.randint(5, 15)
+                    for i in range(0, nvx, grid_size * 2):
+                        for j in range(0, nvy, grid_size * 2):
+                            if i + grid_size < nvx and j + grid_size < nvy:
+                                grid_input[i:i+grid_size, j:j+grid_size] = 0
+                    
+                    inputs.append(torch.tensor(grid_input, dtype=torch.float32).view(1, nvx, nvy))
                     targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
                     sigma_values.append(sigma)
                 
-                # Data Augmentation 2: Jitter più aggressivo nei valori di sigma
-                if np.random.rand() < 0.7:  # 70% di probabilità
-                    jitter_factor = np.random.uniform(0.8, 1.2)  # Range più ampio
-                    jittered_sigma = sigma * jitter_factor
-                    inputs.append(torch.tensor(input_state, dtype=torch.float32).view(1, nvx, nvy))
-                    targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
-                    sigma_values.append(jittered_sigma)
+                # 7. Elastic distortion (20% probabilità)
+                if np.random.rand() < 0.2:
+                    # Crea un campo di displacement
+                    displacement = np.random.randn(2, nvx, nvy) * 3.0
+                    from scipy.ndimage import gaussian_filter
+                    displacement[0] = gaussian_filter(displacement[0], sigma=10)
+                    displacement[1] = gaussian_filter(displacement[1], sigma=10)
                     
-                # Data Augmentation 3: Cutout - applica maschere casuali all'input
-                if np.random.rand() < 0.5:  # 50% di probabilità
-                    mask_size = np.random.randint(5, 15)  # Dimensione della maschera
-                    cutout_input = input_state.copy()
-                    h_start = np.random.randint(0, nvx - mask_size)
-                    w_start = np.random.randint(0, nvy - mask_size)
-                    cutout_input[h_start:h_start+mask_size, w_start:w_start+mask_size] = 0
-                    inputs.append(torch.tensor(cutout_input, dtype=torch.float32).view(1, nvx, nvy))
+                    # Normalizza per limitare lo spostamento massimo
+                    max_displacement = 5.0
+                    displacement = displacement / np.max(np.abs(displacement)) * max_displacement
+                    
+                    # Crea una griglia di coordinate base
+                    y, x = np.meshgrid(np.arange(nvy), np.arange(nvx))
+                    
+                    # Applica il displacement
+                    x_displaced = x + displacement[0]
+                    y_displaced = y + displacement[1]
+                    
+                    # Clip ai bordi
+                    x_displaced = np.clip(x_displaced, 0, nvx - 1)
+                    y_displaced = np.clip(y_displaced, 0, nvy - 1)
+                    
+                    # Interpolazione bilineare (implementazione semplificata)
+                    x0 = np.floor(x_displaced).astype(int)
+                    y0 = np.floor(y_displaced).astype(int)
+                    x1 = np.minimum(x0 + 1, nvx - 1)
+                    y1 = np.minimum(y0 + 1, nvy - 1)
+                    
+                    x_weight = x_displaced - x0
+                    y_weight = y_displaced - y0
+                    
+                    distorted_input = (input_state[x0, y0] * (1 - x_weight) * (1 - y_weight) + 
+                                      input_state[x1, y0] * x_weight * (1 - y_weight) + 
+                                      input_state[x0, y1] * (1 - x_weight) * y_weight + 
+                                      input_state[x1, y1] * x_weight * y_weight)
+                    
+                    inputs.append(torch.tensor(distorted_input, dtype=torch.float32).view(1, nvx, nvy))
                     targets.append([torch.tensor(state, dtype=torch.float32).view(1, nvx, nvy) for state in target_states])
                     sigma_values.append(sigma)
         
+        print(f"Dataset generato: {len(inputs)} esempi ({len(inputs) // (num_samples // len(sigmas) * len(sigmas))}x augmentation)")
         return inputs, targets, sigma_values
     
     def _apply_mixup(self, inputs, targets_list, sigmas, alpha=0.2):
@@ -533,8 +763,10 @@ class CNNTrainer:
         if inputs.size(0) <= 1:
             return inputs, targets_list, sigmas
         
-        # Scegli tra mixup (70%) e cutmix (30%)
-        use_cutmix = np.random.rand() < 0.3
+        # Scegli tra mixup (50%), cutmix (30%), e manifold mixup (20%)
+        rand_val = np.random.rand()
+        use_cutmix = rand_val < 0.3
+        use_manifold = 0.3 <= rand_val < 0.5
             
         if alpha > 0:
             lam = np.random.beta(alpha, alpha)
@@ -548,33 +780,49 @@ class CNNTrainer:
             # Applica cutmix: scambia una regione rettangolare tra due immagini
             mixed_inputs = inputs.clone()
             _, _, H, W = inputs.shape
-            # Genera le dimensioni e posizione del rettangolo
-            cut_rat = np.sqrt(1.0 - lam)  # Rapporto di taglio
-            cut_w = int(W * cut_rat)
-            cut_h = int(H * cut_rat)
             
-            # Assicurati che il taglio sia almeno di dimensione 1
-            cut_w = max(1, cut_w)
-            cut_h = max(1, cut_h)
+            # CutMix avanzato: multiple regioni
+            num_regions = np.random.randint(1, 4)  # 1-3 regioni di cutmix
             
-            cx = np.random.randint(W)  # centro x
-            cy = np.random.randint(H)  # centro y
+            effective_lam = 1.0  # Lambda effettivo (area residua)
             
-            # Definisce i limiti del rettangolo
-            bbx1 = np.clip(cx - cut_w // 2, 0, W)
-            bby1 = np.clip(cy - cut_h // 2, 0, H)
-            bbx2 = np.clip(cx + cut_w // 2, 0, W)
-            bby2 = np.clip(cy + cut_h // 2, 0, H)
-            
-            # Sostituisci la regione rettangolare con i dati da altre immagini
-            if bbx2 > bbx1 and bby2 > bby1:  # Verifica che il rettangolo abbia area positiva
-                mixed_inputs[:, :, bby1:bby2, bbx1:bbx2] = inputs[index, :, bby1:bby2, bbx1:bbx2]
+            for _ in range(num_regions):
+                # Genera le dimensioni e posizione del rettangolo
+                cut_rat = np.sqrt(1.0 - lam) / np.sqrt(num_regions)  # Rapporto di taglio
+                cut_w = int(W * cut_rat)
+                cut_h = int(H * cut_rat)
                 
-                # Ricalcola lambda in base all'area effettivamente tagliata
-                lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1)) / (W * H)
-            else:
-                # Fallback a mixup standard
-                mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
+                # Assicurati che il taglio sia almeno di dimensione 1
+                cut_w = max(1, cut_w)
+                cut_h = max(1, cut_h)
+                
+                cx = np.random.randint(W)  # centro x
+                cy = np.random.randint(H)  # centro y
+                
+                # Definisce i limiti del rettangolo
+                bbx1 = np.clip(cx - cut_w // 2, 0, W)
+                bby1 = np.clip(cy - cut_h // 2, 0, H)
+                bbx2 = np.clip(cx + cut_w // 2, 0, W)
+                bby2 = np.clip(cy + cut_h // 2, 0, H)
+                
+                # Sostituisci la regione rettangolare con i dati da altre immagini
+                if bbx2 > bbx1 and bby2 > bby1:  # Verifica che il rettangolo abbia area positiva
+                    mixed_inputs[:, :, bby1:bby2, bbx1:bbx2] = inputs[index, :, bby1:bby2, bbx1:bbx2]
+                    
+                    # Aggiorna lambda in base all'area effettivamente tagliata
+                    region_area = ((bbx2 - bbx1) * (bby2 - bby1)) / (W * H)
+                    effective_lam -= region_area
+            
+            # Assicurati che lambda sia non-negativo
+            effective_lam = max(0, effective_lam)
+            lam = effective_lam
+            
+        elif use_manifold:
+            # Per manifold mixup lasciamo gli input originali intatti
+            # Il mixup verrà fatto a livello di feature latenti durante il forward pass
+            # Qui settiamo solo il flag per indicare che vogliamo usare manifold mixup
+            mixed_inputs = inputs
+            # La lambda verrà usata durante il forward pass
         else:
             # Mixup standard
             mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
@@ -609,16 +857,82 @@ class CNNTrainer:
             
         return mixed_inputs, mixed_targets_list, mixed_sigmas
     
-    def train(self, train_loader, valid_loader=None, num_epochs=300, mse_weight=0.6, mae_weight=0.4, early_stop_patience=100):
+    def _compute_loss_with_deep_supervision(self, predictions, targets, epoch, num_epochs):
         """
-        Addestra il modello CNN sui dati forniti con strategia di training avanzata.
-        Utilizza SAM (Sharpness-Aware Minimization) con doppio backward pass,
-        data augmentation avanzata, SWA e altri meccanismi anti-overfitting.
+        Calcola la loss con deep supervision (output intermedi).
+        
+        Args:
+            predictions: Lista di tuple (output, aux2, aux3, aux4)
+            targets: Lista di tensori target
+            epoch: Epoca corrente per ponderazione dinamica
+            num_epochs: Numero totale di epoche
+            
+        Returns:
+            Loss totale
+        """
+        batch_loss = 0.0
+        predictions_count = 0
+        
+        # Coefficiente per la deep supervision (aumenta col training)
+        aux_weight = min(0.3, 0.05 + 0.25 * epoch / num_epochs)
+        
+        for i, pred_tuple in enumerate(predictions):
+            if i < len(targets):
+                target = targets[i]
+                
+                # Unpack della tupla di predizione
+                if isinstance(pred_tuple, tuple) and len(pred_tuple) > 1:
+                    # Durante training: output principale + outputs ausiliari
+                    main_pred, aux2, aux3, aux4 = pred_tuple
+                else:
+                    # Durante val: solo output principale
+                    main_pred = pred_tuple
+                
+                # Gestione più robusta del batch size mismatch
+                if target.shape[0] != main_pred.shape[0]:
+                    if target.shape[0] > main_pred.shape[0]:
+                        target = target[:main_pred.shape[0]]
+                    else:
+                        main_pred = main_pred[:target.shape[0]]
+                
+                # Controllo di sicurezza che i tensor abbiano la stessa dimensione
+                assert target.shape == main_pred.shape, f"Shape mismatch: target {target.shape}, pred {main_pred.shape}"
+                
+                # Loss principale (MSE + MAE)
+                mse_loss = self.criterion(main_pred, target)
+                mae_loss = self.mae_criterion(main_pred, target)
+                main_loss = 0.7 * mse_loss + 0.3 * mae_loss
+                
+                # Step weight: ponderazione temporale
+                step_weight = 1.0 / (1.0 + i * 0.15)
+                combined_loss = main_loss * step_weight
+                
+                # Aggiungi loss di deep supervision per output intermedi
+                if isinstance(pred_tuple, tuple) and len(pred_tuple) > 1:
+                    aux2_loss = 0.7 * self.criterion(aux2, target) + 0.3 * self.mae_criterion(aux2, target)
+                    aux3_loss = 0.7 * self.criterion(aux3, target) + 0.3 * self.mae_criterion(aux3, target)
+                    aux4_loss = 0.7 * self.criterion(aux4, target) + 0.3 * self.mae_criterion(aux4, target)
+                    
+                    # Aggiungi le loss ausiliarie con peso crescente durante il training
+                    combined_loss += aux_weight * (aux2_loss + aux3_loss + aux4_loss) * step_weight
+                
+                batch_loss += combined_loss
+                predictions_count += 1
+        
+        # Normalizza per il numero effettivo di predizioni
+        if predictions_count > 0:
+            batch_loss /= predictions_count
+            
+        return batch_loss
+    
+    def train(self, train_loader, valid_loader=None, num_epochs=3000, mse_weight=0.6, mae_weight=0.4, early_stop_patience=200):
+        """
+        Addestra il modello CNN sui dati forniti con strategie anti-overfitting estremamente potenziate.
         
         Args:
             train_loader: DataLoader con i dati di training
             valid_loader: DataLoader con i dati di validazione
-            num_epochs: Numero di epoche di training (default 300 per convergenza profonda)
+            num_epochs: Numero di epoche di training (default 3000 per convergenza molto profonda)
             mse_weight: Peso della MSE loss nella combinazione
             mae_weight: Peso della MAE loss nella combinazione
             early_stop_patience: Numero di epoche di attesa prima di early stopping
@@ -626,7 +940,7 @@ class CNNTrainer:
         Returns:
             dict: Storia del training
         """
-        print(f"Avvio training avanzato del modello CNN con {num_epochs} epoche...")
+        print(f"Avvio training ultra-avanzato del modello CNN con {num_epochs} epoche...")
         start_time = time.time()
         
         history = {
@@ -641,7 +955,11 @@ class CNNTrainer:
         
         # Learning rate warmup - inizia con un LR basso e aumenta gradualmente
         initial_lr = self.optimizer.base_optimizer.param_groups[0]['lr']
-        warmup_epochs = min(10, num_epochs // 10)  # 10 epoche o 10% del totale
+        warmup_epochs = min(50, num_epochs // 20)  # 50 epoche o 5% del totale
+        
+        # Flag per tracking di training phases
+        using_ema = False
+        using_swa = False
         
         for epoch in range(num_epochs):
             # Learning rate warmup
@@ -659,6 +977,18 @@ class CNNTrainer:
             # Print epoch information
             print(f"Epoch {epoch+1}/{num_epochs}")
             
+            # Parametri di augmentation dinamici in base alla fase di training
+            aug_progress = epoch / num_epochs
+            noise_sigma = self.augmentation_scheduler['noise_sigma'](epoch, num_epochs)
+            cutout_prob = self.augmentation_scheduler['cutout_prob'](epoch, num_epochs)
+            mixup_alpha = self.augmentation_scheduler['mixup_alpha'](epoch, num_epochs)
+            
+            # Attiva EMA dopo alcune epoche
+            use_ema_epoch = num_epochs // 10  # 10% delle epoche
+            if epoch >= use_ema_epoch and not using_ema:
+                print(f"Epoch {epoch+1}: Attivazione EMA (Exponential Moving Average)")
+                using_ema = True
+            
             for inputs, targets_list, sigmas in train_loader:
                 inputs = inputs.to(self.device)
                 sigmas = sigmas.to(self.device)
@@ -668,121 +998,104 @@ class CNNTrainer:
                 for t in targets_list:
                     targets_device.append(t.to(self.device))
                 
-                # Applica data augmentation avanzata con probabilità crescente
-                aug_prob = min(0.8, 0.2 + epoch / (num_epochs * 0.8))  # Aumenta gradualmente fino all'80%
-                if np.random.rand() < aug_prob:
-                    inputs = advanced_data_augmentation(
-                        inputs, 
-                        sigma=min(0.02, 0.005 + 0.015 * epoch / num_epochs),  # Rumore crescente
-                        cutout_prob=min(0.6, 0.2 + 0.4 * epoch / num_epochs),  # Probabilità cutout crescente
-                        noise_prob=min(0.8, 0.5 + 0.3 * epoch / num_epochs)    # Probabilità noise crescente
+                # Applica data augmentation avanzata con parametri dinamici
+                inputs = advanced_data_augmentation(
+                    inputs, 
+                    sigma=noise_sigma,
+                    cutout_prob=cutout_prob,
+                    noise_prob=min(0.9, 0.5 + 0.4 * aug_progress)
+                )
+                
+                # Applica mixup/cutmix con probabilità e intensità crescenti
+                use_mixup = np.random.rand() < min(0.7, 0.3 + 0.4 * aug_progress)
+                if use_mixup and inputs.size(0) > 1:
+                    inputs, targets_device, sigmas = self._apply_mixup(
+                        inputs, targets_device, sigmas, alpha=mixup_alpha
                     )
                 
-                # Applica mixup o cutmix con probabilità crescente dopo le prime 30 epoche
-                use_mixup = epoch >= 30 and np.random.rand() < min(0.5, 0.2 + 0.3 * epoch / num_epochs) and inputs.size(0) > 1
-                if use_mixup:
-                    mixup_alpha = min(0.4, 0.1 + 0.3 * epoch / num_epochs)  # Intensità di mixup crescente
-                    inputs, targets_device, sigmas = self._apply_mixup(inputs, targets_device, sigmas, alpha=mixup_alpha)
+                # ----- PRIMO PASSAGGIO SAM: CALCOLO GRADIENTE ORIGINALE -----
                 
-                # Forward pass
-                predictions = self.model(inputs, sigmas)
+                # Forward pass con flag per features extraction (per self-distillation)
+                predictions, features = self.model(inputs, sigmas, return_features=True)
                 
-                # Calcola la loss ibrida (MSE + MAE) con ponderazione temporale
-                batch_loss = 0.0
-                predictions_count = 0
+                # Calcola la loss con deep supervision
+                batch_loss = self._compute_loss_with_deep_supervision(
+                    predictions, targets_device, epoch, num_epochs
+                )
                 
-                for i, pred in enumerate(predictions):
-                    if i < len(targets_device):
-                        # Prendi il target corrispondente al passo temporale i
-                        target = targets_device[i]
-                        
-                        # Gestione più robusta del batch size mismatch
-                        if target.shape[0] != pred.shape[0]:
-                            # Se il target è più grande del pred, troncalo
-                            if target.shape[0] > pred.shape[0]:
-                                target = target[:pred.shape[0]]
-                            # Se il target è più piccolo del pred, dobbiamo adattare pred
-                            else:
-                                pred = pred[:target.shape[0]]
-                        
-                        # Controllo di sicurezza che i tensor abbiano la stessa dimensione
-                        assert target.shape == pred.shape, f"Shape mismatch: target {target.shape}, pred {pred.shape}"
-                        
-                        # Label smoothing: aggiunge un leggero rumore ai target per ridurre l'overfitting
-                        # Basato sul concetto che predizioni troppo "sicure" possono portare a overfitting
-                        if epoch > warmup_epochs:
-                            # Applica label smoothing solo dopo il warmup, con intensità crescente
-                            eps_min = 0.05  # Valore minimo di smoothing
-                            eps_max = 0.15  # Valore massimo di smoothing
-                            progress = min(1.0, (epoch - warmup_epochs) / (num_epochs - warmup_epochs))  # Progresso 0-1
-                            eps = eps_min + progress * (eps_max - eps_min)  # Aumenta progressivamente
+                # R-Drop: consistenza tra dropout diversi (attivo dopo 20% delle epoche)
+                if epoch > num_epochs * 0.2 and np.random.rand() < 0.3:
+                    # Secondo forward pass con dropout diverso
+                    predictions2, features2 = self.model(inputs, sigmas, return_features=True)
+                    
+                    # Loss di consistenza tra le due forward pass
+                    rdrop_weight = min(0.2, 0.05 + 0.15 * (epoch - num_epochs * 0.2) / (num_epochs * 0.8))
+                    
+                    for i, (pred1, pred2) in enumerate(zip(predictions, predictions2)):
+                        # Prendiamo solo l'output principale, non gli ausiliari
+                        if isinstance(pred1, tuple):
+                            pred1 = pred1[0]  # main output
+                        if isinstance(pred2, tuple):
+                            pred2 = pred2[0]  # main output
                             
-                            # Usa una distribuzione più avanzata per il label smoothing
-                            if np.random.rand() < 0.3:  # 30% probabilità di usare smoothing non uniforme
-                                # Aggiungi un po' di rumore casuale ai target (simula incertezze)
-                                noise = torch.randn_like(target) * 0.02
-                                smooth_target = target * (1 - eps) + eps/2 + noise * eps
-                            else:
-                                # Smoothing standard
-                                smooth_target = target * (1 - eps) + eps/2  # Shifta leggermente dal target perfetto
-                                
-                            # Garantisci che i valori rimangano in [0,1] per stabilità
-                            smooth_target = torch.clamp(smooth_target, 0.0, 1.0)
-                        else:
-                            smooth_target = target
+                        # MSE tra le due predizioni come loss di consistenza
+                        rdrop_loss = self.criterion(pred1, pred2)
+                        batch_loss += rdrop_weight * rdrop_loss
+                
+                # Self-Distillation con EMA teacher (attivo se EMA è attivo)
+                if using_ema and epoch >= use_ema_epoch:
+                    # Salva temporaneamente i pesi originali
+                    self.ema.apply_shadow()
+                    
+                    # Forward pass con il teacher (EMA model)
+                    with torch.no_grad():
+                        teacher_predictions, teacher_features = self.model(inputs, sigmas, return_features=True)
+                    
+                    # Ripristina i pesi originali
+                    self.ema.restore()
+                    
+                    # Feature alignment loss tra student e teacher
+                    align_loss = self.feature_alignment_loss(features, teacher_features)
+                    
+                    # Peso crescente per la feature alignment
+                    align_weight = min(0.2, 0.05 + 0.15 * (epoch - use_ema_epoch) / (num_epochs - use_ema_epoch))
+                    batch_loss += align_weight * align_loss
+                    
+                    # Self-distillation tra output di student e teacher
+                    for i, (student_pred, teacher_pred) in enumerate(zip(predictions, teacher_predictions)):
+                        # Prendiamo solo l'output principale
+                        if isinstance(student_pred, tuple):
+                            student_pred = student_pred[0]
+                        if isinstance(teacher_pred, tuple):
+                            teacher_pred = teacher_pred[0]
                             
-                        # Loss ibrida MSE + MAE
-                        mse_loss = self.criterion(pred, smooth_target)
-                        mae_loss = self.mae_criterion(pred, smooth_target)
+                        # Peso della distillation aumenta gradualmente
+                        distill_weight = min(0.25, 0.05 + 0.2 * (epoch - use_ema_epoch) / (num_epochs - use_ema_epoch))
                         
-                        # Schema di ponderazione temporale migliorato
-                        # Dà più peso alle previsioni a breve termine (cruciali per la stabilità)
-                        # ma mantiene significativa anche la previsione a lungo termine
-                        step_weight = 1.0 / (1.0 + i * 0.15)
-                        combined_loss = (mse_weight * mse_loss + mae_weight * mae_loss) * step_weight
-                        batch_loss += combined_loss
-                        predictions_count += 1
+                        # Peso temporale per dare più importanza ai primi timestep
+                        time_weight = 1.0 / (1.0 + i * 0.2)
+                        
+                        # MSE tra student e teacher
+                        distill_loss = self.criterion(student_pred, teacher_pred.detach())
+                        batch_loss += distill_weight * distill_loss * time_weight
                 
-                # Normalizza per il numero effettivo di predizioni
-                if predictions_count > 0:
-                    batch_loss /= predictions_count
-                
-                # SAM richiede due backward/step separati
-                # Prima fase: calcola e applica la perturbazione
+                # Prima fase SAM: calcola e applica la perturbazione
                 self.optimizer.zero_grad()
                 batch_loss.backward()
                 self.optimizer.first_step(zero_grad=True)
                 
-                # Seconda fase: calcola gradiente sui pesi perturbati
+                # ----- SECONDO PASSAGGIO SAM: CALCOLO GRADIENTE SUI PESI PERTURBATI -----
+                
                 # Forward pass sul modello con pesi perturbati
-                predictions_perturbed = self.model(inputs, sigmas)
+                perturbed_predictions = self.model(inputs, sigmas)
                 
-                # Ricalcola la loss sui pesi perturbati
-                batch_loss_perturbed = 0.0
-                predictions_count_perturbed = 0
-                
-                for i, pred in enumerate(predictions_perturbed):
-                    if i < len(targets_device):
-                        target = targets_device[i]
-                        if target.shape[0] != pred.shape[0]:
-                            if target.shape[0] > pred.shape[0]:
-                                target = target[:pred.shape[0]]
-                            else:
-                                pred = pred[:target.shape[0]]
-                        
-                        # Usa target non-smoothed per la seconda fase SAM
-                        mse_loss = self.criterion(pred, target)
-                        mae_loss = self.mae_criterion(pred, target)
-                        step_weight = 1.0 / (1.0 + i * 0.15)
-                        combined_loss = (mse_weight * mse_loss + mae_weight * mae_loss) * step_weight
-                        batch_loss_perturbed += combined_loss
-                        predictions_count_perturbed += 1
-                
-                if predictions_count_perturbed > 0:
-                    batch_loss_perturbed /= predictions_count_perturbed
+                # Ricalcola la loss sui pesi perturbati (più semplice, solo loss principale)
+                perturbed_loss = self._compute_loss_with_deep_supervision(
+                    perturbed_predictions, targets_device, epoch, num_epochs
+                )
                 
                 # Backward sui pesi perturbati
-                batch_loss_perturbed.backward()
+                perturbed_loss.backward()
                 
                 # Gradient clipping per stabilità numerica
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
@@ -790,11 +1103,22 @@ class CNNTrainer:
                 # Ripristina i pesi originali e applica l'aggiornamento
                 self.optimizer.second_step(zero_grad=True)
                 
+                # Aggiorna EMA se attivo
+                if using_ema:
+                    self.ema.update()
+                
                 train_loss += batch_loss.item()
                 num_batches += 1
             
+            # ----- GESTIONE SCHEDULER E TRACKING -----
+            
+            # Attiva SWA dopo la fase iniziale
+            if epoch >= self.swa_start and not using_swa:
+                print(f"Epoch {epoch+1}: Attivazione SWA (Stochastic Weight Averaging)")
+                using_swa = True
+            
             # Gestione degli scheduler
-            if epoch >= self.swa_start:
+            if using_swa:
                 # Dopo l'inizio di SWA, usa lo scheduler SWA
                 self.swa_model.update_parameters(self.model)
                 self.swa_scheduler.step()
@@ -803,18 +1127,23 @@ class CNNTrainer:
                 self.cosine_scheduler.step()
             
             # Salva il learning rate corrente
-            current_lr = self.optimizer.param_groups[0]['lr']
+            current_lr = self.optimizer.base_optimizer.param_groups[0]['lr']
             history['learning_rate'].append(current_lr)
             
             # Normalizza la loss di training
             train_loss /= num_batches
             history['train_loss'].append(train_loss)
             
-            # Validazione
+            # ----- VALIDAZIONE -----
+            
             if valid_loader is not None:
                 # Valutazione sul validation set
                 valid_loss = self.evaluate(valid_loader, mse_weight, mae_weight)
                 history['valid_loss'].append(valid_loss)
+                
+                # Calcola e traccia il gap train/val come metrica di overfitting
+                train_val_gap = valid_loss - train_loss
+                history['train_val_gap'].append(train_val_gap)
                 
                 # Aggiorna lo scheduler principale basato sulla loss di validazione
                 self.scheduler.step(valid_loss)
@@ -822,20 +1151,58 @@ class CNNTrainer:
                 print(f"Epoch {epoch+1}/{num_epochs}, "
                       f"Train Loss: {train_loss:.6f}, "
                       f"Valid Loss: {valid_loss:.6f}, "
+                      f"Gap: {train_val_gap:.6f}, "
                       f"LR: {current_lr:.8f}")
                 
                 # Tracciamento del modello migliore e early stopping
-                if valid_loss < best_valid_loss:
-                    best_valid_loss = valid_loss
+                improved = False
+                
+                # Usa EMA per validazione se attivo
+                if using_ema:
+                    # Salva pesi originali
+                    self.ema.apply_shadow()
                     
-                    # Salva il modello migliore sia su file che in memoria
-                    torch.save(self.model.state_dict(), 'best_cnn_model.pth')
-                    self.best_model_state = self.model.state_dict().copy()
+                    # Valuta con EMA
+                    ema_valid_loss = self.evaluate(valid_loader, mse_weight, mae_weight)
                     
-                    early_stop_counter = 0
-                    print(f"  Nuovo miglior modello salvato (loss: {best_valid_loss:.6f})")
+                    # Ripristina pesi originali
+                    self.ema.restore()
+                    
+                    print(f"  EMA Valid Loss: {ema_valid_loss:.6f} ({'migliore' if ema_valid_loss < valid_loss else 'peggiore'} del modello standard)")
+                    
+                    # Confronta con il miglior modello finora
+                    if ema_valid_loss < best_valid_loss:
+                        best_valid_loss = ema_valid_loss
+                        
+                        # Salva sia il modello EMA che quello standard
+                        torch.save(self.model.state_dict(), 'best_cnn_model.pth')
+                        self.best_model_state = self.model.state_dict().copy()
+                        
+                        # Salva anche i pesi EMA
+                        self.ema.apply_shadow()
+                        torch.save(self.model.state_dict(), 'best_cnn_model_ema.pth')
+                        self.best_ema_state = self.model.state_dict().copy()
+                        self.ema.restore()
+                        
+                        improved = True
+                        early_stop_counter = 0
+                        print(f"  Nuovo miglior modello EMA salvato (loss: {best_valid_loss:.6f})")
                 else:
+                    # Senza EMA, usa la validazione standard
+                    if valid_loss < best_valid_loss:
+                        best_valid_loss = valid_loss
+                        
+                        # Salva il modello migliore
+                        torch.save(self.model.state_dict(), 'best_cnn_model.pth')
+                        self.best_model_state = self.model.state_dict().copy()
+                        
+                        improved = True
+                        early_stop_counter = 0
+                        print(f"  Nuovo miglior modello salvato (loss: {best_valid_loss:.6f})")
+                
+                if not improved:
                     early_stop_counter += 1
+                    print(f"  Nessun miglioramento per {early_stop_counter}/{early_stop_patience} epoche")
                 
                 # Early stopping con messaggio dettagliato
                 if early_stop_counter >= early_stop_patience:
@@ -843,7 +1210,10 @@ class CNNTrainer:
                           f"Nessun miglioramento per {early_stop_patience} epoche consecutive.")
                     
                     # Ripristina il miglior modello per l'output finale
-                    if self.best_model_state is not None:
+                    if using_ema and self.best_ema_state is not None:
+                        self.model.load_state_dict(self.best_ema_state)
+                        print(f"Ripristinato il miglior modello EMA (loss: {best_valid_loss:.6f})")
+                    elif self.best_model_state is not None:
                         self.model.load_state_dict(self.best_model_state)
                         print(f"Ripristinato il miglior modello (loss: {best_valid_loss:.6f})")
                     
@@ -854,6 +1224,11 @@ class CNNTrainer:
                 print(f"Epoch {epoch+1}/{num_epochs}, "
                       f"Train Loss: {train_loss:.6f}, "
                       f"LR: {current_lr:.8f}")
+            
+            # Salva periodicamente il modello
+            if (epoch + 1) % 100 == 0 or epoch + 1 == num_epochs:
+                torch.save(self.model.state_dict(), f'cnn_model_epoch_{epoch+1}.pth')
+                print(f"  Checkpoint salvato all'epoca {epoch+1}")
         
         # Statistiche finali del training
         end_time = time.time()
@@ -864,6 +1239,22 @@ class CNNTrainer:
             print(f"Training completato in {training_hours:.2f} ore ({training_minutes:.2f} minuti)")
         else:
             print(f"Training completato in {training_minutes:.2f} minuti")
+        
+        # Se è stato attivato SWA, aggiorna le statistiche di normalizzazione
+        if using_swa:
+            print("Aggiornamento delle statistiche BatchNorm per il modello SWA...")
+            torch.optim.swa_utils.update_bn(train_loader, self.swa_model)
+            
+            # Valuta il modello SWA
+            self.model = self.swa_model
+            if valid_loader is not None:
+                swa_valid_loss = self.evaluate(valid_loader, mse_weight, mae_weight)
+                print(f"SWA model validation loss: {swa_valid_loss:.6f}")
+                
+                # Se SWA è migliore del miglior modello finora, salvalo
+                if swa_valid_loss < best_valid_loss:
+                    torch.save(self.swa_model.state_dict(), 'best_cnn_model_swa.pth')
+                    print(f"SWA model è il migliore, salvato (loss: {swa_valid_loss:.6f})")
         
         return history
     
@@ -1095,7 +1486,7 @@ class ShakeShake(nn.Module):
 
 def advanced_data_augmentation(inputs, sigma=0.02, cutout_prob=0.5, noise_prob=0.8):
     """
-    Applica tecniche di data augmentation avanzate alle immagini di input.
+    Applica tecniche di data augmentation estremamente avanzate e aggressive alle immagini di input.
     
     Args:
         inputs: Tensore di input [batch_size, channels, height, width]
@@ -1109,37 +1500,338 @@ def advanced_data_augmentation(inputs, sigma=0.02, cutout_prob=0.5, noise_prob=0
     batch_size, channels, height, width = inputs.shape
     augmented = inputs.clone()
     
-    # Rumore gaussiano con probabilità noise_prob
+    # --- GRUPPO 1: RUMORE E DISTURBI ---
+    
+    # Rumore gaussiano con probabilità noise_prob e sigma variabile
     if random.random() < noise_prob:
-        noise = torch.randn_like(augmented) * sigma * random.uniform(0.5, 1.5)
+        # Intensità variabile del rumore
+        noise_factor = random.uniform(0.5, 2.0)
+        noise = torch.randn_like(augmented) * sigma * noise_factor
         augmented = augmented + noise
         augmented = torch.clamp(augmented, 0.0, 1.0)
     
-    # Cutout con probabilità cutout_prob
-    if random.random() < cutout_prob:
-        # Definisci dimensioni del cutout (10-20% dell'immagine)
-        cutout_size_h = int(height * random.uniform(0.1, 0.2))
-        cutout_size_w = int(width * random.uniform(0.1, 0.2))
-        
-        # Per ogni immagine nel batch
-        for i in range(batch_size):
-            # Posizione casuale del cutout
-            top = random.randint(0, height - cutout_size_h - 1)
-            left = random.randint(0, width - cutout_size_w - 1)
-            
-            # Applica cutout (metti a zero)
-            augmented[i, :, top:top+cutout_size_h, left:left+cutout_size_w] = 0.0
-    
-    # Shift dei valori con probabilità 0.3
+    # Rumore spazialmente correlato (più realistico) con probabilità 0.3
     if random.random() < 0.3:
-        shift = random.uniform(-0.05, 0.05)
+        # Generiamo un rumore di base a bassa risoluzione
+        noise_base = torch.randn(batch_size, channels, 
+                               max(height // 8, 4), 
+                               max(width // 8, 4), 
+                               device=augmented.device) * sigma * 2
+        
+        # Upsampling per creare correlazione spaziale
+        noise_upsampled = torch.nn.functional.interpolate(
+            noise_base, size=(height, width), mode='bilinear', align_corners=False)
+        
+        augmented = augmented + noise_upsampled
+        augmented = torch.clamp(augmented, 0.0, 1.0)
+    
+    # Disturbi strutturati (linee, punti) con probabilità 0.2
+    if random.random() < 0.2:
+        for i in range(batch_size):
+            # Decide il tipo di disturbo
+            if random.random() < 0.5:  # Linee
+                num_lines = random.randint(1, 3)
+                for _ in range(num_lines):
+                    thickness = random.randint(1, 3)
+                    if random.random() < 0.5:  # Linea orizzontale
+                        y_pos = random.randint(0, height - 1)
+                        augmented[i, :, max(0, y_pos-thickness):min(height, y_pos+thickness), :] *= random.uniform(0.7, 1.3)
+                    else:  # Linea verticale
+                        x_pos = random.randint(0, width - 1)
+                        augmented[i, :, :, max(0, x_pos-thickness):min(width, x_pos+thickness)] *= random.uniform(0.7, 1.3)
+            else:  # Punti/macchie
+                num_spots = random.randint(2, 5)
+                for _ in range(num_spots):
+                    spot_size = random.randint(3, 10)
+                    y_pos = random.randint(0, height - spot_size)
+                    x_pos = random.randint(0, width - spot_size)
+                    
+                    # Intensità del disturbo (amplifica o diminuisce)
+                    factor = random.uniform(0.6, 1.4)
+                    augmented[i, :, y_pos:y_pos+spot_size, x_pos:x_pos+spot_size] *= factor
+    
+    # --- GRUPPO 2: MASCHERE E OCCLUSIONI ---
+    
+    # Cutout multiplo con probabilità variabile
+    if random.random() < cutout_prob:
+        # Numero di cutout proporzionale alla dimensione dell'immagine
+        num_cutouts = random.randint(1, 3)
+        for _ in range(num_cutouts):
+            # Dimensione variabile dei cutout (5-25% dell'immagine)
+            cutout_size_h = int(height * random.uniform(0.05, 0.25))
+            cutout_size_w = int(width * random.uniform(0.05, 0.25))
+            
+            # Per ogni immagine nel batch
+            for i in range(batch_size):
+                # Posizione casuale del cutout
+                top = random.randint(0, height - cutout_size_h)
+                left = random.randint(0, width - cutout_size_w)
+                
+                # Applica cutout con valore random invece di zero
+                cutout_value = random.uniform(0, 0.3) if random.random() < 0.3 else 0.0
+                augmented[i, :, top:top+cutout_size_h, left:left+cutout_size_w] = cutout_value
+    
+    # GridMask (maschere a griglia) con probabilità 0.2
+    if random.random() < 0.2:
+        grid_size = random.randint(8, max(16, min(height, width) // 8))
+        for i in range(batch_size):
+            mask = torch.ones_like(augmented[i])
+            for y in range(0, height, grid_size * 2):
+                for x in range(0, width, grid_size * 2):
+                    h_end = min(y + grid_size, height)
+                    w_end = min(x + grid_size, width)
+                    if h_end > y and w_end > x:  # Verifica che il blocco sia valido
+                        mask[:, y:h_end, x:w_end] = 0
+            
+            # Applica la griglia con valore random
+            grid_value = random.uniform(0, 0.2) if random.random() < 0.5 else 0.0
+            augmented[i] = augmented[i] * mask + grid_value * (1 - mask)
+    
+    # --- GRUPPO 3: TRASFORMAZIONI DI VALORI ---
+    
+    # Shift/bias globale dei valori con probabilità 0.4
+    if random.random() < 0.4:
+        shift = random.uniform(-0.1, 0.1)  # Shift più aggressivo
         augmented = augmented + shift
         augmented = torch.clamp(augmented, 0.0, 1.0)
     
-    # Jitter di contrasto con probabilità 0.3
-    if random.random() < 0.3:
-        factor = random.uniform(0.8, 1.2)
-        augmented = (augmented - 0.5) * factor + 0.5
+    # Jitter di contrasto con probabilità 0.4
+    if random.random() < 0.4:
+        factor = random.uniform(0.7, 1.3)  # Fattore più aggressivo
+        mean = augmented.mean(dim=[2, 3], keepdim=True)
+        augmented = (augmented - mean) * factor + mean
         augmented = torch.clamp(augmented, 0.0, 1.0)
     
+    # Inversione locale con probabilità 0.15
+    if random.random() < 0.15:
+        for i in range(batch_size):
+            if random.random() < 0.5:  # Inversione regione
+                # Seleziona una regione casuale
+                region_h = random.randint(height // 4, height // 2)
+                region_w = random.randint(width // 4, width // 2)
+                top = random.randint(0, height - region_h)
+                left = random.randint(0, width - region_w)
+                
+                # Inverti i valori nella regione (1-x)
+                augmented[i, :, top:top+region_h, left:left+region_w] = 1.0 - augmented[i, :, top:top+region_h, left:left+region_w]
+            else:  # Inversione a scacchiera
+                checker_size = random.randint(5, 20)
+                for y in range(0, height, checker_size * 2):
+                    for x in range(0, width, checker_size * 2):
+                        y_end = min(y + checker_size, height)
+                        x_end = min(x + checker_size, width)
+                        if y_end > y and x_end > x:
+                            augmented[i, :, y:y_end, x:x_end] = 1.0 - augmented[i, :, y:y_end, x:x_end]
+    
+    # --- GRUPPO 4: TRASFORMAZIONI SPAZIALI ---
+    
+    # Traslazione locale con probabilità 0.2
+    if random.random() < 0.2:
+        # Seleziona una regione casuale da traslare
+        region_size = int(min(height, width) * random.uniform(0.2, 0.4))
+        top = random.randint(0, height - region_size)
+        left = random.randint(0, width - region_size)
+        
+        # Direzione e intensità della traslazione
+        shift_y = random.randint(-region_size//4, region_size//4)
+        shift_x = random.randint(-region_size//4, region_size//4)
+        
+        # Applica la traslazione solo se non esce dai bordi
+        if (top + shift_y >= 0 and top + region_size + shift_y <= height and
+            left + shift_x >= 0 and left + region_size + shift_x <= width):
+            for i in range(batch_size):
+                # Salva la regione originale
+                original = augmented[i, :, top:top+region_size, left:left+region_size].clone()
+                
+                # Cancella la regione originale
+                augmented[i, :, top:top+region_size, left:left+region_size] = 0
+                
+                # Inserisci la regione nella nuova posizione
+                augmented[i, :, top+shift_y:top+region_size+shift_y, 
+                           left+shift_x:left+region_size+shift_x] = original
+    
+    # Distorsione elastica con probabilità 0.15
+    if random.random() < 0.15:
+        # Crea griglie di displacement con correlazione spaziale
+        displacement_x = torch.randn(batch_size, 1, max(height//8, 4), max(width//8, 4), device=augmented.device) * 2
+        displacement_y = torch.randn(batch_size, 1, max(height//8, 4), max(width//8, 4), device=augmented.device) * 2
+        
+        # Upsampling per ottenere displacement field smooth
+        displacement_x = torch.nn.functional.interpolate(displacement_x, size=(height, width), mode='bilinear', align_corners=False)
+        displacement_y = torch.nn.functional.interpolate(displacement_y, size=(height, width), mode='bilinear', align_corners=False)
+        
+        # Crea griglia di coordinate base
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, height, device=augmented.device),
+            torch.linspace(-1, 1, width, device=augmented.device)
+        )
+        
+        # Espandi le dimensioni per il batch
+        grid_x = grid_x.unsqueeze(0).repeat(batch_size, 1, 1)
+        grid_y = grid_y.unsqueeze(0).repeat(batch_size, 1, 1)
+        
+        # Aggiungi displacement e normalizza
+        scale = 0.05  # Intensità della distorsione
+        grid_x = grid_x + displacement_x.squeeze(1) * scale
+        grid_y = grid_y + displacement_y.squeeze(1) * scale
+        
+        # Assicurati che i valori della griglia siano nel range [-1, 1]
+        grid_x = torch.clamp(grid_x, -1, 1)
+        grid_y = torch.clamp(grid_y, -1, 1)
+        
+        # Combina in griglia di sampling finale
+        grid = torch.stack([grid_x, grid_y], dim=3)
+        
+        # Applica la griglia con grid_sample
+        augmented = torch.nn.functional.grid_sample(
+            augmented, grid, mode='bilinear', padding_mode='zeros', align_corners=True
+        )
+    
     return augmented
+
+def manifold_mixup(inputs1, inputs2, features1=None, features2=None, alpha=0.2):
+    """
+    Implementa Manifold Mixup per la regolarizzazione nello spazio latente
+    
+    Args:
+        inputs1, inputs2: Tensori di input da mixare
+        features1, features2: Features latenti opzionali
+        alpha: Parametro per la distribuzione beta
+        
+    Returns:
+        Mixed inputs e/o features con lambda
+    """
+    device = inputs1.device
+    
+    # Genera lambda dalla distribuzione beta
+    lam = np.random.beta(alpha, alpha) if alpha > 0 else 0.5
+    batch_size = inputs1.size(0)
+    
+    # Mixup degli input
+    mixed_inputs = lam * inputs1 + (1 - lam) * inputs2
+    
+    # Mixup delle features se fornite
+    mixed_features = None
+    if features1 is not None and features2 is not None:
+        mixed_features = lam * features1 + (1 - lam) * features2
+    
+    return mixed_inputs, mixed_features, lam
+
+class EMA:
+    """Exponential Moving Average per parametri del modello.
+    
+    Mantiene una versione "media" dei pesi del modello che tende a produrre
+    predizioni più stabili e generalizzabili rispetto ai pesi istantanei.
+    """
+    def __init__(self, model, decay=0.999):
+        """
+        Args:
+            model: Il modello di cui mantenere l'EMA
+            decay: Fattore di decadimento (più alto = aggiornamenti più lenti)
+        """
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        
+        # Registra i parametri iniziali
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+    
+    def update(self):
+        """Aggiorna l'EMA con i pesi correnti del modello."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
+                self.shadow[name] = new_average.clone()
+    
+    def apply_shadow(self):
+        """Sostituisce i parametri del modello con quelli dell'EMA."""
+        self.backup = {}  # Inizializza il backup
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data.clone()  # Salva i parametri originali
+                param.data = self.shadow[name]
+    
+    def restore(self):
+        """Ripristina i parametri originali del modello."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+class SelfDistillationLoss(nn.Module):
+    """Loss di Self-Distillation per il training con consistency regularization.
+    
+    Combina la loss standard con una loss KL-divergence tra le predizioni
+    del modello e le predizioni del modello EMA, incentivando la consistenza.
+    """
+    def __init__(self, T=2.0):
+        """
+        Args:
+            T: Temperatura per la distillation
+        """
+        super(SelfDistillationLoss, self).__init__()
+        self.T = T  # Temperatura (più alta = probabilità più smooth)
+        self.kl_div = nn.KLDivLoss(reduction='batchmean')
+        self.mse = nn.MSELoss()
+        self.mae = nn.L1Loss()
+    
+    def forward(self, student_preds, teacher_preds, targets, weights=None):
+        """
+        Args:
+            student_preds: Predizioni del modello normale
+            teacher_preds: Predizioni del modello EMA (teacher)
+            targets: Target reali
+            weights: Pesi opzionali per le diverse loss
+        
+        Returns:
+            Loss combinata
+        """
+        if weights is None:
+            # Pesi di default: 60% MSE, 20% MAE, 20% distillation
+            weights = {'mse': 0.6, 'mae': 0.2, 'distill': 0.2}
+        
+        # Calcola loss primaria rispetto ai target reali
+        task_loss = weights['mse'] * self.mse(student_preds, targets) + \
+                    weights['mae'] * self.mae(student_preds, targets)
+        
+        # Calcola loss di distillation rispetto al teacher
+        # Per l'equazione del calore usiamo direttamente MSE invece di KL-div
+        distill_loss = weights['distill'] * self.mse(
+            student_preds / self.T, 
+            teacher_preds.detach() / self.T
+        ) * (self.T ** 2)  # Ri-scala per bilanciare l'effetto della temperatura
+        
+        return task_loss + distill_loss
+
+class FeatureAlignmentLoss(nn.Module):
+    """Regolarizzazione tramite allineamento delle feature tra teacher e student model."""
+    def __init__(self):
+        super(FeatureAlignmentLoss, self).__init__()
+        self.mse = nn.MSELoss()
+    
+    def forward(self, student_features, teacher_features):
+        """
+        Args:
+            student_features: Feature del modello normale
+            teacher_features: Feature del modello EMA
+            
+        Returns:
+            Loss di allineamento delle feature
+        """
+        total_loss = 0.0
+        n_features = len(student_features)
+        
+        # Calcola la loss per ogni livello di feature
+        for sf, tf in zip(student_features, teacher_features):
+            # Normalizzazione L2 per confrontare solo i pattern, non le magnitudini
+            sf_norm = F.normalize(sf, dim=1)
+            tf_norm = F.normalize(tf.detach(), dim=1)
+            total_loss += self.mse(sf_norm, tf_norm)
+        
+        return total_loss / n_features
