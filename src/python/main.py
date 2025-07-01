@@ -40,7 +40,7 @@ CASE_HIGH = "High_Diffusivity_10x"
 DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 print(f"Usando dispositivo: {DEVICE}")
 
-# For DeepRitz, use CPU if MPS due to autograd limitations
+# For DepRitz, use CPU if MPS due to autograd limitations
 DEEPRITZ_DEVICE = 'cpu' if DEVICE == 'mps' else DEVICE
 if DEVICE == 'mps':
     print("Nota: DeepRitz utilizzerà CPU invece di MPS per evitare limitazioni di autograd.")
@@ -585,16 +585,23 @@ def train_deepritz_model(model_name=None):
     ).to(DEEPRITZ_DEVICE)
     
     # Se stiamo continuando un training, carichiamo i pesi
-    if model_name and os.path.exists(model_path):
+    # Aggiungiamo una condizione per forzare la creazione di un nuovo modello
+    # anche se esiste già un modello con lo stesso nome
+    force_new_model = True  # Modifica questo a False per caricare un modello esistente
+    
+    if model_name and os.path.exists(model_path) and not force_new_model:
         print(f"Caricamento del modello esistente da: {model_path} per continuare il training.")
         deepritz.load_state_dict(torch.load(model_path, map_location=DEEPRITZ_DEVICE))
         print("Pesi del modello caricati con successo.")
+    else:
+        if os.path.exists(model_path):
+            print(f"Modello {model_name} esistente, ma creando un nuovo modello da zero.")
 
     trainer = DeepRitzTrainer(deepritz, device=DEEPRITZ_DEVICE)
     
     # Addestra il modello con parametri più aggressivi per il fine-tuning
     print("Avvio di una sessione di training estesa per il fine-tuning...")
-    trainer.train(epochs=10000, lr=1e-6, n_domain=8000, n_boundary=1600, n_initial=1600, T=T)
+    trainer.train(epochs=10000, lr=1e-5, n_domain=8000, n_boundary=1600, n_initial=1600, T=T)
     
     # Salva il modello usando il trainer
     trainer.save_model(model_dir)

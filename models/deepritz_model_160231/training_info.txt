@@ -1,0 +1,12 @@
+DeepRitz Model Training Info
+============================
+Total epochs: 10000
+Final loss: 6.592670
+Min loss: 6.592670
+Model architecture: [3, 'Activation', 128, 'Activation', 128, 'Activation', 128, 'Activation', 128, 'Activation', 128]
+Physics parameters:
+  sigma_h: 0.00095298
+  a: 18.515
+  fr: 0.0
+  ft: 0.2383
+  fd: 1.0

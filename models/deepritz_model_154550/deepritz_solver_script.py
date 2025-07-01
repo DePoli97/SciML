@@ -51,10 +51,10 @@ class DeepRitzSolver(nn.Module):
         self.ft = ft
         self.fd = fd
         
-        # Pesi della loss ribilanciati per dare più importanza alla PDE
-        self.pde_weight = 100.0  # Aumentato drasticamente
-        self.ic_weight = 20.0   # Ridotto per bilanciare
-        self.bc_weight = 20.0   # Ridotto per bilanciare
+        # Pesi della loss ribilanciati per dare più importanza alla PDE e alla IC
+        self.pde_weight = 100.0  # Peso elevato per la PDE
+        self.ic_weight = 100.0   # Aumentato significativamente per forzare il rispetto della condizione iniziale
+        self.bc_weight = 20.0    # Ridotto per bilanciare
 
     def init_weights(self):
         for layer in self.layers:
@@ -113,15 +113,24 @@ class DeepRitzSolver(nn.Module):
         t_ic = torch.full_like(x, t0)
         u_pred = self(x, y, t_ic)
         
-        # Condizione iniziale: impulso Gaussiano centrato in (0.9, 0.9)
-        # per rendere la condizione più "morbida" e facile da imparare.
-        x0, y0 = 0.9, 0.9
-        sigma = 0.05  # Deviazione standard della Gaussiana
+        # Condizione iniziale: impulso step nell'angolo in alto a destra
+        # Più netta per una migliore preservazione dell'impulso
+        x0, y0 = 0.9, 0.9  # Centro della regione attiva
         
-        # Calcolo della Gaussiana 2D
-        u_true = torch.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
+        # Creiamo una condizione step che è 1.0 in una regione rettangolare
+        # e 0.0 altrove, con una transizione più netta
+        region_width = 0.15
+        u_true = torch.zeros_like(x)
+        active_region = (x > x0 - region_width/2) & (x < x0 + region_width/2) & \
+                        (y > y0 - region_width/2) & (y < y0 + region_width/2)
+        u_true[active_region] = 1.0
         
-        return torch.mean((u_pred - u_true)**2)
+        # Usiamo un peso maggiore per i punti dove u_true = 1.0 per forzare
+        # l'apprendimento dell'attivazione
+        weights = torch.ones_like(x)
+        weights[active_region] = 5.0  # Diamo più importanza alla regione attiva
+        
+        return torch.mean(weights * (u_pred - u_true)**2)
 
     def get_boundary_condition_loss(self, x_bc, y_bc, t_bc):
         """
@@ -244,8 +253,27 @@ class DeepRitzTrainer:
         t_boundary = torch.cat([t_left, t_right, t_bottom, t_top])
         
         # Punti per la condizione iniziale
-        x_initial = torch.rand(n_initial, 1, device=self.device, requires_grad=True)
-        y_initial = torch.rand(n_initial, 1, device=self.device, requires_grad=True)
+        # Generiamo punti con strategia mista: random + punti concentrati nella regione attiva
+        n_random = int(n_initial * 0.6)  # 60% punti random
+        n_focused = n_initial - n_random  # 40% punti nella regione attiva
+        
+        # Punti random su tutto il dominio
+        x_random = torch.rand(n_random, 1, device=self.device, requires_grad=True)
+        y_random = torch.rand(n_random, 1, device=self.device, requires_grad=True)
+        
+        # Punti concentrati nella regione attiva (intorno a 0.9, 0.9)
+        x0, y0 = 0.9, 0.9
+        region_width = 0.15
+        
+        # Generiamo punti intorno alla regione attiva con una distribuzione più densa
+        x_focused = x0 + (torch.rand(n_focused, 1, device=self.device) - 0.5) * region_width * 1.2
+        y_focused = y0 + (torch.rand(n_focused, 1, device=self.device) - 0.5) * region_width * 1.2
+        x_focused.requires_grad_(True)
+        y_focused.requires_grad_(True)
+        
+        # Combiniamo i punti
+        x_initial = torch.cat([x_random, x_focused])
+        y_initial = torch.cat([y_random, y_focused])
         
         return {
             'domain': (x_domain, y_domain, t_domain),
@@ -253,7 +281,7 @@ class DeepRitzTrainer:
             'initial': (x_initial, y_initial)
         }
     
-    def train(self, epochs=10000, lr=1e-3, n_domain=2000, n_boundary=400, n_initial=400, T=35.0, regenerate_points_per_epoch=False):
+    def train(self, epochs=10000, lr=1e-3, n_domain=2000, n_boundary=400, n_initial=1000, T=35.0, regenerate_points_per_epoch=False):
         """
         Addestra il modello DeepRitz.
         
@@ -270,6 +298,10 @@ class DeepRitzTrainer:
         # Scheduler più aggressivo per stabilizzare il training
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.8)
         
+        # Conserviamo il valore originale dei pesi delle loss
+        original_ic_weight = self.model.ic_weight
+        original_pde_weight = self.model.pde_weight
+        
         print(f"Inizio addestramento DeepRitz per {epochs} epoche...")
         start_time = time.time()
         
@@ -279,6 +311,11 @@ class DeepRitzTrainer:
             data = self.generate_training_data(n_domain, n_boundary, n_initial, T)
         
         for epoch in range(epochs):
+            # Strategia di pesi dinamica: all'inizio enfatizzare la condizione iniziale
+            if epoch < 2000:  # Prime 2000 epoche: focus sulla condizione iniziale
+                ic_weight_factor = 2.0 - (epoch / 2000.0)  # Da 2.0 a 1.0
+                self.model.ic_weight = original_ic_weight * ic_weight_factor
+            
             if regenerate_points_per_epoch:
                 # Rigenera i dati ad ogni epoca
                 if epoch > 0 and epoch % 250 == 0:

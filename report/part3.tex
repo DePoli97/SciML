@@ -2,7 +2,19 @@
 
 \subsection{Introduction to the DeepRitz Approach}
 
+
 The DeepRitz method represents a significant advancement in the numerical solution of partial differential equations (PDEs). Unlike standard neural networks used in PINNs (Physics-Informed Neural Networks), the DeepRitz method is based on the variational formulation of the problem, directly minimizing the energy functional associated with the differential equation. This approach offers several theoretical advantages, especially for problems with Neumann boundary conditions, as in our case of the monodomain equation for cardiac impulse propagation.
+
+Instead of directly solving the differential equation as done by PINNs,
+\[
+\frac{\partial u}{\partial t} - \nabla \cdot (\Sigma \nabla u) + f(u) = 0,
+\]
+the DeepRitz method tackles an equivalent variational problem by minimizing the functional:
+\[
+\mathcal{E}(u) = \int_{\Omega \times I} \left( \frac{1}{2} \Sigma |\nabla u|^2 + F(u) + \frac{1}{2} \left(\frac{\partial u}{\partial t}\right)^2 \right) dx\,dt,
+\]
+where \( F(u) \) is a primitive of the reaction term \( f(u) = a(u - f_r)(u - f_t)(u - f_d) \). By calculating the integral of this functional, the approach avoids the need to explicitly compute the time derivative at each point, making the learning process more stable and efficient.
+
 
 \subsection{Initial Architecture and Challenges}
 
